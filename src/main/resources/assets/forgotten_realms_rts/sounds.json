@@ -1,0 +1,261 @@
+{
+  "ui_click": {
+    "category": "ui",
+    "subtitle": "subtitles.forgotten_realms_rts.ui_click",
+    "sounds": [
+      {
+        "name": "forgotten_realms_rts:ui_click",
+        "stream": false
+      }
+    ]
+  },
+  "peasant_ambient": {
+    "category": "neutral",
+    "subtitle": "subtitles.forgotten_realms_rts.peasant_ambient",
+    "sounds": [
+      "forgotten_realms_rts:entity/peasant/p_amb",
+      "forgotten_realms_rts:entity/peasant/p_amb1",
+      "forgotten_realms_rts:entity/peasant/p_amb2",
+      "forgotten_realms_rts:entity/peasant/p_amb3"
+    ]
+  },
+  "peasant_hurt": {
+    "category": "neutral",
+    "subtitle": "subtitles.forgotten_realms_rts.peasant_hurt",
+    "sounds": [
+      "forgotten_realms_rts:entity/peasant/p_hurt",
+      "forgotten_realms_rts:entity/peasant/p_hurt1",
+      "forgotten_realms_rts:entity/peasant/p_hurt2",
+      "forgotten_realms_rts:entity/peasant/p_hurt3"
+    ]
+  },
+  "peasant_death": {
+    "category": "neutral",
+    "subtitle": "subtitles.forgotten_realms_rts.peasant_death",
+    "sounds": [
+      "forgotten_realms_rts:entity/peasant/p_death",
+      "forgotten_realms_rts:entity/peasant/p_death1",
+      "forgotten_realms_rts:entity/peasant/p_death2"
+    ]
+  },
+  "peasant_step": {
+    "category": "neutral",
+    "subtitle": "subtitles.forgotten_realms_rts.peasant_step",
+    "sounds": [
+      "forgotten_realms_rts:entity/peasant/p_step",
+      "forgotten_realms_rts:entity/peasant/p_step1",
+      "forgotten_realms_rts:entity/peasant/p_step2",
+      "forgotten_realms_rts:entity/peasant/p_step3"
+    ]
+  },
+  "soldier_ambient": {
+    "category": "neutral",
+    "subtitle": "subtitles.forgotten_realms_rts.soldier_ambient",
+    "sounds": [
+      "forgotten_realms_rts:entity/soldier_ambient1",
+      "forgotten_realms_rts:entity/soldier_ambient11",
+      "forgotten_realms_rts:entity/soldier_ambient13"
+    ]
+  },
+  "soldier_hurt": {
+    "category": "neutral",
+    "subtitle": "subtitles.forgotten_realms_rts.soldier_hurt",
+    "sounds": [
+      "forgotten_realms_rts:entity/soldier/soldier_hurt",
+      "forgotten_realms_rts:entity/soldier/soldier_hurt1",
+      "forgotten_realms_rts:entity/soldier/soldier_hurt2"
+    ]
+  },
+  "soldier_death": {
+    "category": "neutral",
+    "subtitle": "subtitles.forgotten_realms_rts.soldier_death",
+    "sounds": [
+      "forgotten_realms_rts:entity/soldier/soldier_death",
+      "forgotten_realms_rts:entity/soldier/soldier_death1",
+      "forgotten_realms_rts:entity/soldier/soldier_death2"
+    ]
+  },
+  "soldier_step": {
+    "category": "neutral",
+    "subtitle": "subtitles.forgotten_realms_rts.soldier_step",
+    "sounds": [
+      "forgotten_realms_rts:entity/soldier/soldier_step",
+      "forgotten_realms_rts:entity/soldier/soldier_step1",
+      "forgotten_realms_rts:entity/soldier/soldier_step2"
+    ]
+  },
+  "ranged_ambient": {
+    "category": "neutral",
+    "subtitle": "subtitles.forgotten_realms_rts.ranged_ambient",
+    "sounds": [
+      {
+        "name": "forgotten_realms_rts:entity/ranged/ambient",
+        "stream": false
+      }
+    ]
+  },
+  "ranged_hurt": {
+    "category": "neutral",
+    "subtitle": "subtitles.forgotten_realms_rts.ranged_hurt",
+    "sounds": [
+      {
+        "name": "forgotten_realms_rts:entity/ranged/hurt",
+        "stream": false
+      }
+    ]
+  },
+  "ranged_death": {
+    "category": "neutral",
+    "subtitle": "subtitles.forgotten_realms_rts.ranged_death",
+    "sounds": [
+      {
+        "name": "forgotten_realms_rts:entity/ranged/death",
+        "stream": false
+      }
+    ]
+  },
+  "ranged_step": {
+    "category": "neutral",
+    "subtitle": "subtitles.forgotten_realms_rts.ranged_step",
+    "sounds": [
+      {
+        "name": "forgotten_realms_rts:entity/ranged/step",
+        "stream": false
+      }
+    ]
+  },
+  "ranged_shoot": {
+    "category": "neutral",
+    "subtitle": "subtitles.forgotten_realms_rts.ranged_shoot",
+    "sounds": [
+      {
+        "name": "forgotten_realms_rts:entity/ranged/shoot",
+        "stream": false
+      }
+    ]
+  },
+  "echo_ambient": {
+    "category": "hostile",
+    "subtitle": "subtitles.forgotten_realms_rts.echo_ambient",
+    "sounds": [
+      {
+        "name": "forgotten_realms_rts:entity/echo/ambient",
+        "stream": false
+      }
+    ]
+  },
+  "echo_hurt": {
+    "category": "hostile",
+    "subtitle": "subtitles.forgotten_realms_rts.echo_hurt",
+    "sounds": [
+      {
+        "name": "forgotten_realms_rts:entity/echo/hurt",
+        "stream": false
+      }
+    ]
+  },
+  "echo_death": {
+    "category": "hostile",
+    "subtitle": "subtitles.forgotten_realms_rts.echo_death",
+    "sounds": [
+      {
+        "name": "forgotten_realms_rts:entity/echo/death",
+        "stream": false
+      }
+    ]
+  },
+  "echo_step": {
+    "category": "hostile",
+    "subtitle": "subtitles.forgotten_realms_rts.echo_step",
+    "sounds": [
+      {
+        "name": "forgotten_realms_rts:entity/echo/step",
+        "stream": false
+      }
+    ]
+  },
+  "brute_ambient": {
+    "category": "hostile",
+    "subtitle": "subtitles.forgotten_realms_rts.brute_ambient",
+    "sounds": [
+      {
+        "name": "forgotten_realms_rts:entity/brute/ambient",
+        "stream": false
+      }
+    ]
+  },
+  "brute_hurt": {
+    "category": "hostile",
+    "subtitle": "subtitles.forgotten_realms_rts.brute_hurt",
+    "sounds": [
+      {
+        "name": "forgotten_realms_rts:entity/brute/hurt",
+        "stream": false
+      }
+    ]
+  },
+  "brute_death": {
+    "category": "hostile",
+    "subtitle": "subtitles.forgotten_realms_rts.brute_death",
+    "sounds": [
+      {
+        "name": "forgotten_realms_rts:entity/brute/death",
+        "stream": false
+      }
+    ]
+  },
+  "brute_step": {
+    "category": "hostile",
+    "subtitle": "subtitles.forgotten_realms_rts.brute_step",
+    "sounds": [
+      {
+        "name": "forgotten_realms_rts:entity/brute/step",
+        "stream": false
+      }
+    ]
+  },
+  "music_castle_of_the_ancient_kings": {
+    "category": "music",
+    "sounds": [{ "name": "forgotten_realms_rts:music/castle_of_the_ancient_kings", "stream": true }]
+  },
+  "music_final_battle_of_the_lost_kingdom_1": {
+    "category": "music",
+    "sounds": [{ "name": "forgotten_realms_rts:music/final_battle_of_the_lost_kingdom_1", "stream": true }]
+  },
+  "music_final_battle_of_the_lost_kingdom_2": {
+    "category": "music",
+    "sounds": [{ "name": "forgotten_realms_rts:music/final_battle_of_the_lost_kingdom_2", "stream": true }]
+  },
+  "music_final_boss": {
+    "category": "music",
+    "sounds": [{ "name": "forgotten_realms_rts:music/final_boss", "stream": true }]
+  },
+  "music_heroic_battle_on_the_plains": {
+    "category": "music",
+    "sounds": [{ "name": "forgotten_realms_rts:music/heroic_battle_on_the_plains", "stream": true }]
+  },
+  "music_medieval_village_in_peace": {
+    "category": "music",
+    "sounds": [{ "name": "forgotten_realms_rts:music/medieval_village_in_peace", "stream": true }]
+  },
+  "music_sailors_of_the_north_1": {
+    "category": "music",
+    "sounds": [{ "name": "forgotten_realms_rts:music/sailors_of_the_north_1", "stream": true }]
+  },
+  "music_song_of_the_valley_tavern_1": {
+    "category": "music",
+    "sounds": [{ "name": "forgotten_realms_rts:music/song_of_the_valley_tavern_1", "stream": true }]
+  },
+  "music_the_heros_journey_1": {
+    "category": "music",
+    "sounds": [{ "name": "forgotten_realms_rts:music/the_heros_journey_1", "stream": true }]
+  },
+  "music_the_light_of_the_kingdom_1": {
+    "category": "music",
+    "sounds": [{ "name": "forgotten_realms_rts:music/the_light_of_the_kingdom_1", "stream": true }]
+  },
+  "music_tribute_to_the_hero": {
+    "category": "music",
+    "sounds": [{ "name": "forgotten_realms_rts:music/tribute_to_the_hero", "stream": true }]
+  }
+}

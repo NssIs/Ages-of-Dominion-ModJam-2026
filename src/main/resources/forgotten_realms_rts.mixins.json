@@ -1,0 +1,18 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.hyrrx.forgottenrealmsrts.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "refmap": "forgotten_realms_rts.refmap.json",
+  "mixins": [
+    "ChunkGeneratorMixin",
+    "LightningBoltMixin"
+  ],
+  "client": [
+    "CameraMixin",
+    "SkyRendererMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

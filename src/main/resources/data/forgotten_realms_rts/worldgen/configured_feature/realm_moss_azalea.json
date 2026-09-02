@@ -1,0 +1,28 @@
+{
+  "type": "minecraft:simple_block",
+  "config": {
+    "to_place": {
+      "type": "minecraft:weighted_state_provider",
+      "entries": [
+        {
+          "data": {
+            "Name": "minecraft:moss_carpet"
+          },
+          "weight": 25
+        },
+        {
+          "data": {
+            "Name": "minecraft:azalea"
+          },
+          "weight": 7
+        },
+        {
+          "data": {
+            "Name": "minecraft:flowering_azalea"
+          },
+          "weight": 4
+        }
+      ]
+    }
+  }
+}

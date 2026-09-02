@@ -1,0 +1,84 @@
+{
+  "_comment": [
+    "Names, prices and production for the buildings in the bottom tray.",
+    "Keys are the structure path with the category included and the trailing level-<n> dropped,",
+    "so one entry covers every upgrade tier of a building.",
+    "Costs are per resource: wood, stone, iron, gold, food, coal. Omitted resources cost nothing.",
+    "'produces' is the per-cycle income a completed building of this type adds to the owner's",
+    "stockpiles (see RtsProduction); omitted resources produce nothing.",
+    "'townHall': true marks the one building that is free and must be founded before any other;",
+    "the Town Hall has no passive production — the founder receives a small starter stockpile and",
+    "workers must be assigned to gather resources.",
+    "Mine buildings use the physical worker system: a coal mine pays 3 coal and 1 stone per worker",
+    "every 5 seconds, a quarry pays 3 stone and 1 coal, iron pays 1 iron and 1 stone every 8 seconds,",
+    "and gold pays 1 gold and 1 stone every 10 seconds. Levels 1/2/3 hold 2/4/6 workers respectively.",
+    "The Merchant brings 2 gold and 1 iron each trade cycle. A Farm feeds one assigned worker for 3",
+    "food every 5 seconds; a Villager House adds five population capacity and has no upgrades.",
+    "A structure with no entry here still shows up - it just costs nothing and takes its name from",
+    "its folder - so adding a new .nbt never hard-fails."
+  ],
+
+  "villagers/town/hall": {
+    "name": "Town Hall",
+    "townHall": true
+  },
+  "villagers/town/merchant": {
+    "name": "Merchant",
+    "wood": 30,
+    "gold": 10,
+    "produces": { "gold": 2, "iron": 1 }
+  },
+  "villagers/town/farm": {
+    "name": "Farm",
+    "wood": 30,
+    "stone": 5
+  },
+  "villagers/town/house": {
+    "name": "Villager House",
+    "wood": 40,
+    "stone": 10
+  },
+  "villagers/town/mines/coal": {
+    "name": "Coal Mine",
+    "wood": 35,
+    "stone": 20
+  },
+  "villagers/town/mines/stone": {
+    "name": "Quarry",
+    "wood": 40,
+    "stone": 10
+  },
+  "villagers/town/mines/iron": {
+    "name": "Iron Mine",
+    "wood": 45,
+    "stone": 25,
+    "minAge": 1
+  },
+  "villagers/town/mines/gold": {
+    "name": "Gold Mine",
+    "wood": 50,
+    "stone": 35,
+    "iron": 10,
+    "minAge": 1
+  },
+  "villagers/military/watchtower": {
+    "name": "Watch Tower",
+    "wood": 40,
+    "stone": 20,
+    "minAge": 1
+  },
+  "villagers/military/wall": {
+    "name": "Wall",
+    "stone": 8
+  },
+  "villagers/military/space": {
+    "name": "Fighter Cabin",
+    "wood": 50,
+    "stone": 15,
+    "minAge": 1
+  },
+  "villagers/decoration/path": {
+    "name": "Path",
+    "stone": 2
+  }
+}

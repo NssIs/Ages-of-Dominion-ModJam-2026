@@ -1,0 +1,6 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": "forgotten_realms_rts:item/fallen_brute_spawn_egg"
+  }
+}

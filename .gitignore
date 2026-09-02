@@ -1,0 +1,26 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+!**/src/**/build/
+
+# IDEs
+.idea/
+.run/
+.vscode/
+*.iws
+*.iml
+*.ipr
+out/
+bin/
+
+# Minecraft development output
+run/
+repo/
+src/generated/**/.cache/
+/*.jar
+
+# Operating-system and local tool files
+.DS_Store
+__pycache__/
+*.pyc

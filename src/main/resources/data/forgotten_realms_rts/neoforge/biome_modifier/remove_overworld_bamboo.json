@@ -1,0 +1,9 @@
+{
+  "type": "neoforge:remove_features",
+  "biomes": "#minecraft:is_overworld",
+  "features": [
+    "minecraft:bamboo",
+    "minecraft:bamboo_light"
+  ],
+  "steps": "vegetal_decoration"
+}

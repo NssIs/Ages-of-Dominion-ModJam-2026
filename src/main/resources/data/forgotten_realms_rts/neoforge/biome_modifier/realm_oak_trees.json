@@ -1,0 +1,6 @@
+{
+  "type": "neoforge:add_features",
+  "biomes": "#forgotten_realms_rts:open_realm_biomes",
+  "features": "forgotten_realms_rts:realm_oak",
+  "step": "vegetal_decoration"
+}
