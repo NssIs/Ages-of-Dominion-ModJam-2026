@@ -5,12 +5,12 @@
   "compatibilityLevel": "JAVA_21",
   "refmap": "forgotten_realms_rts.refmap.json",
   "mixins": [
-    "ChunkGeneratorMixin",
     "LightningBoltMixin"
   ],
   "client": [
     "CameraMixin",
-    "SkyRendererMixin"
+    "SkyRendererMixin",
+    "SectionCompilerMixin"
   ],
   "injectors": {
     "defaultRequire": 1

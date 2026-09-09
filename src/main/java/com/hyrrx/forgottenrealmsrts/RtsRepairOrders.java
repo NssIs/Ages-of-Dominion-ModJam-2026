@@ -136,8 +136,8 @@ public final class RtsRepairOrders {
             }
 
             if (worker.getWorkState() == WorkState.GOING_TO_REPAIR) {
-                BlockPos target = repairTarget(level, entry);
-                if (atTarget(worker, target)) {
+                BlockPos target = repairTarget(level, entry, worker);
+                if (atTarget(level, worker, target)) {
                     worker.getNavigation().stop();
                     worker.setWorkState(WorkState.REPAIRING);
                 } else if (worker.getNavigation().isDone() || worker.getNavigation().isStuck()) {
@@ -148,9 +148,9 @@ public final class RtsRepairOrders {
             if (worker.getWorkState() != WorkState.REPAIRING) {
                 continue;
             }
-            if (worker.distanceToSqr(repairTarget(level, entry).getX() + 0.5D,
-                    repairTarget(level, entry).getY(), repairTarget(level, entry).getZ() + 0.5D)
-                    > LEAVE_DISTANCE_SQUARED) {
+            BlockPos target = repairTarget(level, entry, worker);
+            if (target == null || worker.distanceToSqr(target.getX() + 0.5D,
+                    target.getY(), target.getZ() + 0.5D) > LEAVE_DISTANCE_SQUARED) {
                 worker.setWorkState(WorkState.GOING_TO_REPAIR);
                 navigateToRepair(level, worker, entry);
                 continue;
@@ -318,7 +318,8 @@ public final class RtsRepairOrders {
         return cost;
     }
 
-    private static BlockPos repairTarget(ServerLevel level, RtsBuildingStore.Entry entry) {
+    private static BlockPos repairTarget(ServerLevel level, RtsBuildingStore.Entry entry,
+                                         RtsVillagerEntity worker) {
         BlockPos origin = RtsBuildingDurability.normalizedOrigin(level, entry);
         Vec3i size = RtsBuildingDurability.rotatedSize(level, entry);
         double centerX = origin.getX() + size.getX() * 0.5D;
@@ -331,47 +332,60 @@ public final class RtsRepairOrders {
             int minZ = origin.getZ() - radius;
             int maxZ = origin.getZ() + size.getZ() - 1 + radius;
             for (int x = minX; x <= maxX; x++) {
-                best = closerWalkable(level, best, x, minZ, origin.getY(), centerX, centerZ);
-                best = closerWalkable(level, best, x, maxZ, origin.getY(), centerX, centerZ);
+                best = closerWalkable(level, worker, best, x, minZ, origin.getY(), centerX, centerZ);
+                best = closerWalkable(level, worker, best, x, maxZ, origin.getY(), centerX, centerZ);
             }
             for (int z = minZ + 1; z < maxZ; z++) {
-                best = closerWalkable(level, best, minX, z, origin.getY(), centerX, centerZ);
-                best = closerWalkable(level, best, maxX, z, origin.getY(), centerX, centerZ);
+                best = closerWalkable(level, worker, best, minX, z, origin.getY(), centerX, centerZ);
+                best = closerWalkable(level, worker, best, maxX, z, origin.getY(), centerX, centerZ);
             }
             if (best != null) {
                 return best;
             }
         }
-        return origin.offset(size.getX() / 2, 0, size.getZ() / 2);
+        return null;
     }
 
-    private static BlockPos closerWalkable(ServerLevel level, BlockPos current, int x, int z,
+    private static BlockPos closerWalkable(ServerLevel level, RtsVillagerEntity worker,
+                                           BlockPos current, int x, int z,
                                            int preferredY, double centerX, double centerZ) {
         int y = RtsEntities.findBottomFloorY(level, x, z, preferredY);
         BlockPos candidate = new BlockPos(x, y, z);
-        if (level.getBlockState(candidate).isAir()
-                && level.getBlockState(candidate.above()).isAir()
-                && !level.getBlockState(candidate.below()).getCollisionShape(level, candidate.below()).isEmpty()) {
-            double dx = candidate.getX() + 0.5D - centerX;
-            double dz = candidate.getZ() + 0.5D - centerZ;
-            double distance = dx * dx + dz * dz;
-            if (current == null) {
-                return candidate;
-            }
-            double currentDx = current.getX() + 0.5D - centerX;
-            double currentDz = current.getZ() + 0.5D - centerZ;
-            return distance < currentDx * currentDx + currentDz * currentDz ? candidate : current;
+        if (!RtsNavigationSafety.isSafeFeet(level, candidate)) {
+            return current;
         }
-        return current;
+        if (worker != null) {
+            var path = worker.getNavigation().createPath(candidate, 1);
+            if (path == null || !path.canReach()
+                    || !RtsNavigationSafety.isSafePath(level, worker.blockPosition(), path)) {
+                return current;
+            }
+        }
+        double dx = candidate.getX() + 0.5D - centerX;
+        double dz = candidate.getZ() + 0.5D - centerZ;
+        double distance = dx * dx + dz * dz;
+        if (current == null) {
+            return candidate;
+        }
+        double currentDx = current.getX() + 0.5D - centerX;
+        double currentDz = current.getZ() + 0.5D - centerZ;
+        return distance < currentDx * currentDx + currentDz * currentDz ? candidate : current;
     }
 
     private static void navigateToRepair(ServerLevel level, RtsVillagerEntity worker,
                                          RtsBuildingStore.Entry entry) {
-        RtsUnitOrders.moveToSmart(worker, level, repairTarget(level, entry), 0.9D);
+        BlockPos target = repairTarget(level, entry, worker);
+        if (target == null) {
+            worker.getNavigation().stop();
+            RtsUnitOrders.clearNavigation(worker);
+            return;
+        }
+        RtsUnitOrders.moveToSmart(worker, level, target, 0.9D);
     }
 
-    private static boolean atTarget(RtsVillagerEntity worker, BlockPos target) {
-        return worker.distanceToSqr(target.getX() + 0.5D, target.getY(), target.getZ() + 0.5D)
+    private static boolean atTarget(ServerLevel level, RtsVillagerEntity worker, BlockPos target) {
+        return target != null && RtsNavigationSafety.isSafeFeet(level, worker.blockPosition())
+                && worker.distanceToSqr(target.getX() + 0.5D, target.getY(), target.getZ() + 0.5D)
                 <= ARRIVAL_DISTANCE_SQUARED;
     }
 

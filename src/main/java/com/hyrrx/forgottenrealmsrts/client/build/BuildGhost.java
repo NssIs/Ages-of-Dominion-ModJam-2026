@@ -2,6 +2,7 @@ package com.hyrrx.forgottenrealmsrts.client.build;
 
 import com.hyrrx.forgottenrealmsrts.BuildingPlacement;
 import com.hyrrx.forgottenrealmsrts.RtsMode;
+import com.hyrrx.forgottenrealmsrts.client.NaturalTreeClient;
 import com.hyrrx.forgottenrealmsrts.client.input.RtsMouseController;
 import com.hyrrx.forgottenrealmsrts.client.ui.RtsBottomBarHud;
 import com.hyrrx.forgottenrealmsrts.client.ui.RtsHudState;
@@ -123,14 +124,9 @@ public final class BuildGhost {
         if (minecraft.level == null || previewOrigins.isEmpty()) {
             return linearPieceCount();
         }
-        int chargeable = 0;
-        for (BlockPos previewOrigin : previewOrigins) {
-            if (!minecraft.level.getBlockState(previewOrigin).is(
-                    net.minecraft.world.level.block.Blocks.DIRT_PATH)) {
-                chargeable++;
-            }
-        }
-        return chargeable;
+        return BuildingPlacement.newPathTiles(previewOrigins,
+                cell -> minecraft.level.getBlockState(cell).is(
+                        net.minecraft.world.level.block.Blocks.DIRT_PATH)).size();
     }
 
     public static int linearExistingPieceCount() {
@@ -314,7 +310,8 @@ public final class BuildGhost {
         } else {
             Vec3i rotatedSize = BuildingPlacement.rotateSize(shape.size(), rotation);
             validity = BuildingPlacement.checkGeometry(minecraft.level, origin, rotatedSize,
-                    (x, y, z) -> shape.occupiedRotated(x, y, z, rotation), ignored);
+                    (x, y, z) -> shape.occupiedRotated(x, y, z, rotation), ignored, false,
+                    true, NaturalTreeClient.protection());
         }
 
         if (RtsMouseController.consumeLeftClickReleased() && !overHud(minecraft)) {

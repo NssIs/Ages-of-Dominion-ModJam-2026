@@ -11,13 +11,14 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Vec3i;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.level.block.Mirror;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplate;
+import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.AABB;
 
 /** Server-authoritative one-worker farms and their timed food output. */
@@ -30,6 +31,7 @@ public final class RtsFarmOrders {
     private static final int FOOD_INTERVAL_TICKS = 100;
     private static final double DROP_OFF_DISTANCE_SQUARED = 36.0D;
     private static final double FARM_ARRIVAL_DISTANCE_SQUARED = 4.0D;
+    private static final int WORK_RING_RADIUS = 4;
     private static final int STOCKPILE_CAP = 999_999;
     private static final Map<FarmKey, Long> NEXT_OUTPUT_TICK = new HashMap<>();
 
@@ -37,9 +39,18 @@ public final class RtsFarmOrders {
     }
 
     public static boolean isFarmStructure(Identifier structure) {
-        return structure != null
-                && structure.getPath().contains("villagers/town/farm")
-                && "farm".equals(ModPayloads.buildingOf(structure));
+        if (structure == null) {
+            return false;
+        }
+        if (RtsStructureTemplates.isMappedVanillaFarm(structure)) {
+            return true;
+        }
+        String path = structure.getPath();
+        boolean modFarm = ForgottenRealmsRTS.MOD_ID.equals(structure.getNamespace())
+                && path.contains("farm");
+        boolean legacyFarm = "minecraft".equals(structure.getNamespace())
+                && path.startsWith("villagers/") && path.contains("farm");
+        return (modFarm || legacyFarm) && "farm".equals(ModPayloads.buildingOf(structure));
     }
 
     /** Builds the live billboard state shown above a selected farm. */
@@ -53,16 +64,15 @@ public final class RtsFarmOrders {
             return FarmStatusPayload.clear();
         }
 
-        FarmSite site = farmSite(level, entry, found.get());
+        AABB bounds = farmBounds(level, entry, found.get());
         int workersInside = level.getEntitiesOfClass(
                 RtsVillagerEntity.class,
-                site.bounds(),
+                bounds.inflate(RtsEntities.POPULATION_SCAN_RADIUS),
                 worker -> worker.isAlive()
                         && worker.getFarmBuildingId() == entry.id()
                         && worker.getWorkState() == WorkState.FARMING).size();
-        net.minecraft.core.Vec3i size = BuildingPlacement.rotateSize(
-                found.get().getSize(), entry.rotation());
-        BlockPos origin = normalizedOrigin(found.get(), entry);
+        Vec3i size = BuildingPlacement.rotateSize(found.get().getSize(), entry.rotation());
+        BlockPos origin = RtsBuildingDurability.normalizedOrigin(level, entry);
         BlockPos displayPos = new BlockPos(
                 (int) Math.floor(origin.getX() + size.getX() * 0.5D),
                 origin.getY() + size.getY() + 1,
@@ -74,9 +84,23 @@ public final class RtsFarmOrders {
 
     /** Assigns selected workers to a farm, never exceeding the one-worker limit. */
     public static void assignFarm(ServerPlayer player, List<Integer> entityIds, long buildingId) {
-        if (!RtsCivilization.isFounded(player)
-                || RtsBattle.outcome(player) != RtsBattle.OUTCOME_ONGOING
-                || entityIds == null || entityIds.isEmpty() || buildingId <= 0L) {
+        if (player == null) {
+            return;
+        }
+        if (!RtsCivilization.isFounded(player)) {
+            feedback(player, "Found your civilization first.");
+            return;
+        }
+        if (RtsBattle.outcome(player) != RtsBattle.OUTCOME_ONGOING) {
+            feedback(player, "The realm is no longer active.");
+            return;
+        }
+        if (entityIds == null || entityIds.isEmpty()) {
+            feedback(player, "Select a living worker first.");
+            return;
+        }
+        if (buildingId <= 0L) {
+            feedback(player, "Select a Farm first.");
             return;
         }
 
@@ -96,8 +120,10 @@ public final class RtsFarmOrders {
         }
 
         BlockPos townCenter = RtsEntities.townHallGroundCenter(player).orElse(player.blockPosition());
-        if (horizontalDistanceSquared(entry.origin(), townCenter) > (double) WORK_RADIUS * WORK_RADIUS) {
-            player.sendOverlayMessage(Component.literal("That farm lies beyond the realm's work radius."));
+        AABB bounds = farmBounds(level, entry, template.get());
+        if (horizontalDistanceSquared(bounds, townCenter)
+                > (double) WORK_RADIUS * WORK_RADIUS) {
+            feedback(player, "That Farm is outside the realm's work radius.");
             return;
         }
 
@@ -111,14 +137,26 @@ public final class RtsFarmOrders {
         int available = Math.max(0, WORKERS_PER_FARM - occupied);
         int assigned = 0;
         int alreadyAssigned = 0;
+        boolean sawWorker = false;
+        boolean sawOutOfRangeWorker = false;
+        boolean sawEligibleWorker = false;
+        boolean sawUnreachableFarm = false;
 
         for (Integer entityId : selectedIds) {
             Entity entity = level.getEntity(entityId);
-            if (!(entity instanceof RtsVillagerEntity worker) || !worker.isAlive()
-                    || horizontalDistanceSquared(worker.blockPosition(), townCenter)
-                    > RtsEntities.POPULATION_SCAN_RADIUS * RtsEntities.POPULATION_SCAN_RADIUS) {
+            if (!(entity instanceof RtsVillagerEntity worker)) {
                 continue;
             }
+            sawWorker = true;
+            if (!worker.isAlive()) {
+                continue;
+            }
+            if (horizontalDistanceSquared(worker.blockPosition(), townCenter)
+                    > RtsEntities.POPULATION_SCAN_RADIUS * RtsEntities.POPULATION_SCAN_RADIUS) {
+                sawOutOfRangeWorker = true;
+                continue;
+            }
+            sawEligibleWorker = true;
             if (worker.getFarmBuildingId() == buildingId
                     && isActiveFarmState(worker.getWorkState())) {
                 alreadyAssigned++;
@@ -129,12 +167,19 @@ public final class RtsFarmOrders {
                 break;
             }
 
+            BlockPos workPoint = farmWorkPoint(level, worker, entry, template.get());
+            if (workPoint == null) {
+                sawUnreachableFarm = true;
+                continue;
+            }
+
+            // A farm order is deliberate and cancels a previous move, mine, construction, or wood job.
             RtsUnitOrders.clear(worker);
             RtsWorkerOrders.cancel(worker);
             worker.wearFarmerKit();
             worker.setFarmBuildingId(buildingId);
             worker.setWorkState(WorkState.GOING_TO_FARM);
-            navigateToFarm(worker, farmInterior(level, entry, template.get()));
+            navigateToFarm(worker, workPoint);
             available--;
             assigned++;
         }
@@ -144,7 +189,15 @@ public final class RtsFarmOrders {
                     + " worker" + (assigned + alreadyAssigned == 1 ? " is " : "s are ")
                     + "assigned to the Farm (1 place)."));
         } else if (occupied >= WORKERS_PER_FARM) {
-            player.sendOverlayMessage(Component.literal("The Farm already has its worker."));
+            feedback(player, "The Farm is full (1 / 1).");
+        } else if (sawUnreachableFarm) {
+            feedback(player, "No reachable work point beside the Farm.");
+        } else if (!sawWorker) {
+            feedback(player, "Select a living worker first.");
+        } else if (!sawEligibleWorker && sawOutOfRangeWorker) {
+            feedback(player, "That worker is outside the Town Hall range.");
+        } else if (!sawEligibleWorker) {
+            feedback(player, "Select a living worker first.");
         }
     }
 
@@ -231,25 +284,26 @@ public final class RtsFarmOrders {
                 continue;
             }
 
-            FarmSite site = farmSite(level, found.get(), template.get());
+            BlockPos workPoint = farmWorkPoint(level, worker, found.get(), template.get());
+            if (workPoint == null) {
+                beginReturn(level, worker, townCenter);
+                continue;
+            }
             if (worker.getWorkState() == WorkState.GOING_TO_FARM) {
-                if (site.bounds().contains(worker.getX(), worker.getY(), worker.getZ())
-                        && worker.distanceToSqr(site.interior().getX() + 0.5D,
-                        site.interior().getY(), site.interior().getZ() + 0.5D)
-                        <= FARM_ARRIVAL_DISTANCE_SQUARED) {
+                if (atWorkPoint(level, worker, workPoint)) {
                     worker.getNavigation().stop();
                     worker.setWorkState(WorkState.FARMING);
                 } else if (worker.getNavigation().isDone() || worker.getNavigation().isStuck()) {
-                    navigateToFarm(worker, site.interior());
+                    navigateToFarm(worker, workPoint);
                 }
             }
 
             if (worker.getWorkState() != WorkState.FARMING) {
                 continue;
             }
-            if (!site.bounds().contains(worker.getX(), worker.getY(), worker.getZ())) {
+            if (!atWorkPoint(level, worker, workPoint)) {
                 worker.setWorkState(WorkState.GOING_TO_FARM);
-                navigateToFarm(worker, site.interior());
+                navigateToFarm(worker, workPoint);
                 continue;
             }
 
@@ -308,51 +362,78 @@ public final class RtsFarmOrders {
         worker.clearWorkAssignment();
     }
 
-    private static FarmSite farmSite(ServerLevel level, RtsBuildingStore.Entry entry,
-                                     StructureTemplate template) {
-        BlockPos origin = normalizedOrigin(template, entry);
-        net.minecraft.core.Vec3i size = BuildingPlacement.rotateSize(template.getSize(), entry.rotation());
+    private static AABB farmBounds(ServerLevel level, RtsBuildingStore.Entry entry,
+                                   StructureTemplate template) {
+        BlockPos origin = RtsBuildingDurability.normalizedOrigin(level, entry);
+        Vec3i size = BuildingPlacement.rotateSize(template.getSize(), entry.rotation());
         AABB bounds = new AABB(origin.getX(), origin.getY(), origin.getZ(),
                 origin.getX() + size.getX(), origin.getY() + size.getY(),
                 origin.getZ() + size.getZ());
-        return new FarmSite(bounds, farmInterior(level, entry, template));
+        return bounds;
     }
 
-    private static BlockPos farmInterior(ServerLevel level, RtsBuildingStore.Entry entry,
-                                         StructureTemplate template) {
-        BlockPos origin = normalizedOrigin(template, entry);
-        net.minecraft.core.Vec3i size = BuildingPlacement.rotateSize(template.getSize(), entry.rotation());
+    /** Finds a walkable point outside the shell and prefers candidates with a real vanilla path. */
+    private static BlockPos farmWorkPoint(ServerLevel level, RtsVillagerEntity worker,
+                                          RtsBuildingStore.Entry entry,
+                                          StructureTemplate template) {
+        BlockPos origin = RtsBuildingDurability.normalizedOrigin(level, entry);
+        Vec3i size = BuildingPlacement.rotateSize(template.getSize(), entry.rotation());
         double centreX = origin.getX() + size.getX() * 0.5D;
         double centreZ = origin.getZ() + size.getZ() * 0.5D;
-        BlockPos best = null;
-        double bestDistance = Double.MAX_VALUE;
-        for (int y = 0; y < size.getY(); y++) {
-            for (int x = 0; x < size.getX(); x++) {
-                for (int z = 0; z < size.getZ(); z++) {
-                    BlockPos candidate = origin.offset(x, y, z);
-                    if (!isWalkable(level, candidate)) {
-                        continue;
-                    }
-                    double dx = candidate.getX() + 0.5D - centreX;
-                    double dz = candidate.getZ() + 0.5D - centreZ;
-                    double distance = dx * dx + dz * dz;
-                    if (distance < bestDistance) {
-                        best = candidate;
-                        bestDistance = distance;
-                    }
-                }
+        int preferredY = origin.getY() + 1;
+        for (int radius = 1; radius <= WORK_RING_RADIUS; radius++) {
+            int minX = origin.getX() - radius;
+            int maxX = origin.getX() + size.getX() - 1 + radius;
+            int minZ = origin.getZ() - radius;
+            int maxZ = origin.getZ() + size.getZ() - 1 + radius;
+            BlockPos best = null;
+            for (int x = minX; x <= maxX; x++) {
+                best = closerWorkPoint(level, worker, best, x, minZ, preferredY,
+                        centreX, centreZ);
+                best = closerWorkPoint(level, worker, best, x, maxZ, preferredY,
+                        centreX, centreZ);
+            }
+            for (int z = minZ + 1; z < maxZ; z++) {
+                best = closerWorkPoint(level, worker, best, minX, z, preferredY,
+                        centreX, centreZ);
+                best = closerWorkPoint(level, worker, best, maxX, z, preferredY,
+                        centreX, centreZ);
+            }
+            if (best != null) {
+                return best;
             }
         }
-        if (best != null) {
-            return best;
+        return null;
+    }
+
+    private static BlockPos closerWorkPoint(ServerLevel level, RtsVillagerEntity worker,
+                                            BlockPos current, int x, int z, int preferredY,
+                                            double centreX, double centreZ) {
+        int y = RtsEntities.findBottomFloorY(level, x, z, preferredY);
+        BlockPos candidate = new BlockPos(x, y, z);
+        if (!isWalkable(level, candidate)) {
+            return current;
         }
-        return origin.offset(size.getX() / 2, Math.min(1, Math.max(0, size.getY() - 1)), size.getZ() / 2);
+        if (worker != null) {
+            Path path = worker.getNavigation().createPath(candidate, 1);
+            if (path == null || !path.canReach()
+                    || !RtsNavigationSafety.isSafePath(level, worker.blockPosition(), path)) {
+                return current;
+            }
+        }
+        double dx = candidate.getX() + 0.5D - centreX;
+        double dz = candidate.getZ() + 0.5D - centreZ;
+        double distance = dx * dx + dz * dz;
+        if (current == null) {
+            return candidate;
+        }
+        double currentDx = current.getX() + 0.5D - centreX;
+        double currentDz = current.getZ() + 0.5D - centreZ;
+        return distance < currentDx * currentDx + currentDz * currentDz ? candidate : current;
     }
 
     private static boolean isWalkable(ServerLevel level, BlockPos feet) {
-        return level.getBlockState(feet).isAir()
-                && level.getBlockState(feet.above()).isAir()
-                && !level.getBlockState(feet.below()).getCollisionShape(level, feet.below()).isEmpty();
+        return RtsNavigationSafety.isSafeFeet(level, feet);
     }
 
     private static void navigateToFarm(RtsVillagerEntity worker, BlockPos target) {
@@ -365,13 +446,18 @@ public final class RtsFarmOrders {
         RtsUnitOrders.moveToSmart(worker, level, center, 0.9D);
     }
 
-    private static BlockPos normalizedOrigin(StructureTemplate template, RtsBuildingStore.Entry entry) {
-        if (entry.normalizedOrigin()) {
-            return entry.origin();
-        }
-        BlockPos offset = template.getZeroPositionWithTransform(BlockPos.ZERO, Mirror.NONE,
-                entry.rotation());
-        return entry.origin().offset(-offset.getX(), -offset.getY(), -offset.getZ());
+    private static boolean atWorkPoint(ServerLevel level, RtsVillagerEntity worker, BlockPos workPoint) {
+        return RtsNavigationSafety.isSafeFeet(level, worker.blockPosition())
+                && worker.distanceToSqr(workPoint.getX() + 0.5D, workPoint.getY(),
+                workPoint.getZ() + 0.5D) <= FARM_ARRIVAL_DISTANCE_SQUARED;
+    }
+
+    private static double horizontalDistanceSquared(AABB bounds, BlockPos point) {
+        double x = point.getX() + 0.5D;
+        double z = point.getZ() + 0.5D;
+        double dx = x < bounds.minX ? bounds.minX - x : x > bounds.maxX ? x - bounds.maxX : 0.0D;
+        double dz = z < bounds.minZ ? bounds.minZ - z : z > bounds.maxZ ? z - bounds.maxZ : 0.0D;
+        return dx * dx + dz * dz;
     }
 
     private static double horizontalDistanceSquared(BlockPos first, BlockPos second) {
@@ -383,6 +469,7 @@ public final class RtsFarmOrders {
     private record FarmKey(UUID owner, long id) {
     }
 
-    private record FarmSite(AABB bounds, BlockPos interior) {
+    private static void feedback(ServerPlayer player, String message) {
+        player.sendOverlayMessage(Component.literal(message));
     }
 }

@@ -358,11 +358,15 @@ public final class ModPayloads {
         }
         StructureTemplate template = found.get();
         BuildingCosts.Definition definition = BuildingCosts.get(payload.structure());
+        ServerLevel level = (ServerLevel) player.level();
         RtsEconomy.migrateProgression(player);
         boolean onboardingCoalMine = BuildingCosts.isFirstCoalMinePlacement(payload.structure(), player);
+        boolean pendingTownHall = RtsConstructionStore.get(level).entries().stream()
+                .anyMatch(entry -> entry.owner().equals(player.getUUID())
+                        && BuildingCosts.get(entry.structure()).townHall());
         // Order matters for the message the player gets: "found your town first" is more useful
         // than "you cannot afford it" when both are true.
-        if (definition.townHall() && RtsEconomy.townHallPlaced(player)) {
+        if (definition.townHall() && (RtsEconomy.townHallPlaced(player) || pendingTownHall)) {
             refuse(player, "Your civilization already has a Town Hall.");
             return;
         }
@@ -390,6 +394,7 @@ public final class ModPayloads {
             refuse(player, BuildingPlacement.Result.UNAFFORDABLE);
             return;
         }
+        boolean layeredConstruction = Arrays.stream(placementCost).allMatch(cost -> cost <= 0);
 
         Rotation rotation = payload.rotation();
         Vec3i size = template.getSize();
@@ -398,13 +403,13 @@ public final class ModPayloads {
 
         BuildingPlacement.Result geometry = BuildingPlacement.checkGeometry(
                 player.level(), payload.origin(), rotatedSize,
-                (x, y, z) -> solid.contains(BlockPos.asLong(x, y, z)));
+                (x, y, z) -> solid.contains(BlockPos.asLong(x, y, z)), Set.of(), false,
+                true, RtsWorld.naturalTreeProtection(level));
         if (!geometry.ok()) {
             refuse(player, geometry);
             return;
         }
 
-        ServerLevel level = (ServerLevel) player.level();
         if (RtsConstructionOrders.overlaps(level, payload.origin(), rotatedSize, solid)) {
             refuse(player, BuildingPlacement.Result.OBSTRUCTED);
             return;
@@ -418,15 +423,24 @@ public final class ModPayloads {
 
         RtsConstructionStore store = RtsConstructionStore.get(level);
         RtsConstructionStore.Entry construction = store.add(player.getUUID(), payload.structure(),
-                payload.origin(), rotation, totalBlocks);
+                payload.origin(), rotation, totalBlocks, layeredConstruction);
         ConstructionInfo info = describeConstruction(level, construction);
         if (info == null) {
+            RtsConstructionOrders.releaseWorkers(level, construction.id());
             store.remove(construction.id(), player.getUUID());
             refuse(player, BuildingPlacement.Result.UNKNOWN_STRUCTURE);
             return;
         }
 
         RtsEconomy.spend(player, placementCost);
+        if (definition.townHall()) {
+            int clearedTrees = RtsWorld.clearNaturalTrees(level, payload.origin(), rotatedSize,
+                    construction.id());
+            if (clearedTrees > 0) {
+                ForgottenRealmsRTS.LOGGER.info("Cleared {} natural tree blocks around {}'s Town Hall.",
+                        clearedTrees, player.getName().getString());
+            }
+        }
         context.reply(new BuildingSelectionPayload(Optional.empty(), Optional.of(info)));
         context.reply(new BuildingEffectPayload(info.origin(), info.sizeX(), info.sizeY(),
                 info.sizeZ(), BuildingActionPayload.Action.PLACE));
@@ -434,7 +448,9 @@ public final class ModPayloads {
                 info.origin().getX() + info.sizeX() / 2.0D,
                 info.origin().getY() + Math.max(0.5D, info.sizeY() * 0.5D),
                 info.origin().getZ() + info.sizeZ() / 2.0D);
-        player.sendOverlayMessage(Component.literal("Foundation set. Select villagers and click the site."));
+        player.sendOverlayMessage(Component.literal(layeredConstruction
+                ? "Foundation set. Building automatically."
+                : "Foundation set. Select workers and click the site."));
     }
 
     /** Places a dominant-axis, one-block-wide path or wall drag as one server-side transaction. */
@@ -498,15 +514,11 @@ public final class ModPayloads {
             return;
         }
 
-        List<BlockPos> newCells = new ArrayList<>(cells.size());
-        int alreadyLaid = 0;
-        for (BlockPos cell : cells) {
-            if (path && level.getBlockState(cell).is(Blocks.DIRT_PATH)) {
-                alreadyLaid++;
-            } else {
-                newCells.add(cell);
-            }
-        }
+        List<BlockPos> newCells = path
+                ? BuildingPlacement.newPathTiles(cells,
+                cell -> level.getBlockState(cell).is(Blocks.DIRT_PATH))
+                : List.copyOf(cells);
+        int alreadyLaid = cells.size() - newCells.size();
         if (newCells.isEmpty()) {
             refuse(player, "That path is already laid — no charge.");
             return;
@@ -842,9 +854,7 @@ public final class ModPayloads {
     /** Assigns selected worker villagers to a one-worker farm. */
     private static void onAssignFarmRequested(AssignFarmPayload payload, IPayloadContext context) {
         if (!(context.player() instanceof ServerPlayer player)
-                || !RtsMode.isActive(player)
-                || !RtsCivilization.isFounded(player)
-                || RtsBattle.outcome(player) != RtsBattle.OUTCOME_ONGOING) {
+                || !RtsMode.isActive(player)) {
             return;
         }
         RtsFarmOrders.assignFarm(player, payload.entityIds(), payload.buildingId());
@@ -1255,7 +1265,8 @@ public final class ModPayloads {
 
         BuildingPlacement.Result geometry = BuildingPlacement.checkGeometry(
                 player.level(), destination, targetSize,
-                (x, y, z) -> targetSolid.contains(BlockPos.asLong(x, y, z)), ignored);
+                (x, y, z) -> targetSolid.contains(BlockPos.asLong(x, y, z)), ignored, false,
+                true, RtsWorld.naturalTreeProtection(level));
         if (!geometry.ok()) {
             refuse(player, geometry);
             return;

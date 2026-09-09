@@ -11,6 +11,7 @@ import com.hyrrx.forgottenrealmsrts.client.ui.RtsHudState;
 import com.hyrrx.forgottenrealmsrts.client.ui.RtsSidePanelHud;
 import com.hyrrx.forgottenrealmsrts.client.RtsSpectateClientState;
 import com.hyrrx.forgottenrealmsrts.client.RtsBuildingHealthBarRenderer;
+import com.hyrrx.forgottenrealmsrts.client.NaturalTreeTransparencyController;
 import net.minecraft.client.Minecraft;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.neoforge.client.event.ClientPlayerNetworkEvent;
@@ -39,6 +40,8 @@ public final class ClientPayloadHandlers {
     private static final String PROTOCOL_VERSION = "8";
     /** Set when the server asks for the guide before the client has finished entering the world. */
     private static boolean guidePending;
+    /** Client level identity used to discard static selection state across world/dimension changes. */
+    private static Object observedLevel;
 
     private ClientPayloadHandlers() {
     }
@@ -88,19 +91,34 @@ public final class ClientPayloadHandlers {
     }
 
     static void handleSelection(BuildingSelectionPayload payload, IPayloadContext context) {
-        // resolvePendingBuildingSelection() also consumes this reply as an in-flight unit order
-        // (e.g. right-clicking a mine to assign workers), but that must not swallow the refresh: an
-        // upgrade/demolish reply that happens to land while an order is pending used to leave the
-        // side panel showing a stale building until the player clicked away and back.
+        // The same response is either a normal panel selection or the acknowledgement that lets a
+        // pending selected-worker order identify its target. Resolve the command first so a consumed
+        // mine response is not immediately reapplied as an ordinary mine-panel selection.
+        boolean consumedByUnitCommand;
         if (payload.construction().isPresent()) {
-            BuildingSelectionController.resolvePendingConstructionSelection(
+            consumedByUnitCommand = BuildingSelectionController.resolvePendingConstructionSelection(
                     payload.construction().orElse(null));
         } else {
-            BuildingSelectionController.resolvePendingBuildingSelection(payload.building().orElse(null));
+            consumedByUnitCommand = BuildingSelectionController.resolvePendingBuildingSelection(
+                    payload.building().orElse(null));
+        }
+        if (suppressOrdinaryBuildingSelection(consumedByUnitCommand)) {
+            // A selected worker clicking a mine uses this response only to discover the server's
+            // tracked id. The order resolver already cleared the unit selection; do not immediately
+            // turn the same response back into a selected mine panel.
+            RtsHudState.setSelectedPlacedBuilding(null);
+            RtsHudState.setSelectedConstruction(null);
+            RtsHudState.setSelectedBuilding(null);
+            return;
         }
         RtsHudState.setSelectedPlacedBuilding(payload.building().orElse(null));
         RtsHudState.setSelectedConstruction(payload.construction().orElse(null));
         RtsHudState.setSelectedBuilding(null);
+    }
+
+    /** Package-private so the focused client-order check can pin down this response-consumer rule. */
+    static boolean suppressOrdinaryBuildingSelection(boolean consumedByUnitCommand) {
+        return consumedByUnitCommand;
     }
 
     static void handleMineStatus(MineStatusPayload payload, IPayloadContext context) {
@@ -128,6 +146,18 @@ public final class ClientPayloadHandlers {
     }
 
     private static void onClientTick(ClientTickEvent.Post event) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft.level != observedLevel) {
+            if (observedLevel != null) {
+                BuildGhost.cancel();
+                RtsHudState.clearSelection();
+                BuildingSelectionController.clearTransientState();
+                RtsSidePanelHud.clearTransientState();
+                RtsBuildingHealthBarRenderer.clear();
+                NaturalTreeTransparencyController.clear();
+            }
+            observedLevel = minecraft.level;
+        }
         if (guidePending) {
             tryOpenGuide();
         }
@@ -135,11 +165,13 @@ public final class ClientPayloadHandlers {
 
     private static void onClientLoggingOut(ClientPlayerNetworkEvent.LoggingOut event) {
         guidePending = false;
+        observedLevel = null;
         BuildGhost.cancel();
         RtsHudState.clearSelection();
         BuildingSelectionController.clearTransientState();
         RtsSidePanelHud.clearTransientState();
         RtsBuildingHealthBarRenderer.clear();
+        NaturalTreeTransparencyController.clear();
     }
 
     private static void tryOpenGuide() {
@@ -172,6 +204,7 @@ public final class ClientPayloadHandlers {
         RtsHudState.clearSelection();
         RtsHudState.startNewTownGuide();
         RtsBuildingHealthBarRenderer.clear();
+        NaturalTreeTransparencyController.clear();
         Minecraft.getInstance().setScreen(null);
     }
 

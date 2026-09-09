@@ -45,6 +45,9 @@ public final class RtsVillagerEntity extends Villager implements RtsRealmDefende
     private static final EntityDataAccessor<Integer> DATA_CARRIED_WOOD = SynchedEntityData.defineId(
         RtsVillagerEntity.class, EntityDataSerializers.INT
     );
+    private static final EntityDataAccessor<Integer> DATA_CARRIED_FOOD = SynchedEntityData.defineId(
+        RtsVillagerEntity.class, EntityDataSerializers.INT
+    );
     private static final EntityDataAccessor<Long> DATA_MINE_BUILDING_ID = SynchedEntityData.defineId(
         RtsVillagerEntity.class, EntityDataSerializers.LONG
     );
@@ -99,6 +102,7 @@ public final class RtsVillagerEntity extends Villager implements RtsRealmDefende
         builder.define(DATA_VARIANT, (byte) VARIANT_FARMER);
         builder.define(DATA_WORK_STATE, (byte) WorkState.IDLE.ordinal());
         builder.define(DATA_CARRIED_WOOD, 0);
+        builder.define(DATA_CARRIED_FOOD, 0);
         builder.define(DATA_MINE_BUILDING_ID, 0L);
         builder.define(DATA_FARM_BUILDING_ID, 0L);
         builder.define(DATA_CONSTRUCTION_BUILDING_ID, 0L);
@@ -129,6 +133,14 @@ public final class RtsVillagerEntity extends Villager implements RtsRealmDefende
 
     public void setCarriedWood(int amount) {
         this.entityData.set(DATA_CARRIED_WOOD, Math.max(0, amount));
+    }
+
+    public int getCarriedFood() {
+        return Math.max(0, this.entityData.get(DATA_CARRIED_FOOD));
+    }
+
+    public void setCarriedFood(int amount) {
+        this.entityData.set(DATA_CARRIED_FOOD, Math.max(0, amount));
     }
 
     public long getMineBuildingId() {
@@ -328,6 +340,7 @@ public final class RtsVillagerEntity extends Villager implements RtsRealmDefende
         setWoodWorksite(null);
         setWorkState(WorkState.IDLE);
         setCarriedWood(0);
+        setCarriedFood(0);
     }
 
     @Override
@@ -348,6 +361,7 @@ public final class RtsVillagerEntity extends Villager implements RtsRealmDefende
      */
     @Override
     protected void customServerAiStep(ServerLevel level) {
+        RtsUnitOrders.guardVillagerNavigation(this, level);
     }
 
     @Override
@@ -376,6 +390,7 @@ public final class RtsVillagerEntity extends Villager implements RtsRealmDefende
         output.putInt("Variant", this.getVariant());
         output.putInt("WorkState", this.getWorkState().ordinal());
         output.putInt("CarriedWood", this.getCarriedWood());
+        output.putInt("CarriedFood", this.getCarriedFood());
         output.putLong("MineBuildingId", this.getMineBuildingId());
         output.putLong("FarmBuildingId", this.getFarmBuildingId());
         output.putLong("ConstructionBuildingId", this.getConstructionBuildingId());
@@ -409,6 +424,7 @@ public final class RtsVillagerEntity extends Villager implements RtsRealmDefende
         this.setWorkState(WorkState.values()[Math.floorMod(
                 input.getIntOr("WorkState", WorkState.IDLE.ordinal()), WorkState.values().length)]);
         this.setCarriedWood(input.getIntOr("CarriedWood", 0));
+        this.setCarriedFood(input.getIntOr("CarriedFood", 0));
         this.setMineBuildingId(input.getLongOr("MineBuildingId", 0L));
         this.setFarmBuildingId(input.getLongOr("FarmBuildingId", 0L));
         this.setConstructionBuildingId(input.getLongOr("ConstructionBuildingId", 0L));

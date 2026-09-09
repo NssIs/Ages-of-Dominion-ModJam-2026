@@ -57,4 +57,9 @@ public final class RtsStructureTemplates {
         }
         return requested;
     }
+
+    /** Whether an entry is the live vanilla farm template used by the farm card migration. */
+    public static boolean isMappedVanillaFarm(Identifier requested) {
+        return VANILLA_PLAINS_FARM.equals(requested);
+    }
 }

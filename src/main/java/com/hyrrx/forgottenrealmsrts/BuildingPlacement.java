@@ -3,6 +3,7 @@ package com.hyrrx.forgottenrealmsrts;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Vec3i;
 import net.minecraft.resources.Identifier;
+import net.minecraft.tags.BlockTags;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.Rotation;
 import net.minecraft.world.level.block.Blocks;
@@ -11,6 +12,7 @@ import net.minecraft.world.level.block.state.BlockState;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * Whether a building may stand at a given spot.
@@ -114,7 +116,21 @@ public final class BuildingPlacement {
      */
     public static Result checkGeometry(BlockGetter level, BlockPos origin, Vec3i size, Footprint solid,
                                        Set<Long> ignoredPositions, boolean allowPathSurface) {
+        return checkGeometry(level, origin, size, solid, ignoredPositions, allowPathSurface,
+                false, NaturalTreeClassifier.NONE);
+    }
+
+    /**
+     * Geometry check with the ordinary-building natural-tree allowance. Paths and fences leave
+     * this allowance disabled because their existing obstruction rules are deliberately stricter.
+     */
+    public static Result checkGeometry(BlockGetter level, BlockPos origin, Vec3i size, Footprint solid,
+                                       Set<Long> ignoredPositions, boolean allowPathSurface,
+                                       boolean allowNaturalTrees,
+                                       NaturalTreeClassifier.Protection protection) {
         boolean anySupported = false;
+        NaturalTreeClassifier.Scanner trees = allowNaturalTrees
+                ? new NaturalTreeClassifier.Scanner(level, protection) : null;
 
         for (int x = 0; x < size.getX(); x++) {
             for (int z = 0; z < size.getZ(); z++) {
@@ -148,7 +164,8 @@ public final class BuildingPlacement {
                     // Collision shape is the gameplay definition of support. `isSolid()` is a
                     // rendering/material shortcut and rejects some perfectly walkable terrain,
                     // which made the path ghost say Blocked while the cursor was over grass.
-                    if (level.getBlockState(below).getCollisionShape(level, below).isEmpty()) {
+                    if (!level.getBlockState(below).getFluidState().isEmpty()
+                            || level.getBlockState(below).getCollisionShape(level, below).isEmpty()) {
                         return Result.UNSUPPORTED;
                     }
                     anySupported = true;
@@ -168,7 +185,8 @@ public final class BuildingPlacement {
                     }
                     BlockState existing = level.getBlockState(worldPos);
                     boolean pathSurface = allowPathSurface && y == lowest && isPathSurface(existing);
-                    if (!existing.isAir() && !existing.canBeReplaced() && !pathSurface) {
+                    if (!canReplaceExisting(level, worldPos, existing, y == 0, pathSurface,
+                            allowNaturalTrees, trees)) {
                         return Result.OBSTRUCTED;
                     }
                 }
@@ -197,19 +215,48 @@ public final class BuildingPlacement {
                 || path.endsWith("/" + name) || path.contains("/" + name + "/");
     }
 
-    /** Expands a drag into a dominant-axis, one-block-wide line of 1×1×1 cells. */
+    /**
+     * Expands a path drag into the inclusive X/Z rectangle between the two surface cells. Walls
+     * retain their dominant-axis, one-block-wide line semantics. An oversized request is rejected
+     * as an empty layout so no caller can accidentally place a truncated prefix.
+     */
     public static LinearLayout linearLayout(Identifier structure, Vec3i templateSize,
                                             BlockPos anchor, BlockPos cursor) {
-        if (!isLinearStructure(structure) || templateSize.getX() <= 0
+        if (structure == null || templateSize == null || anchor == null || cursor == null
+                || !isLinearStructure(structure) || templateSize.getX() <= 0
                 || templateSize.getY() <= 0 || templateSize.getZ() <= 0) {
             return new LinearLayout(Rotation.NONE, List.of(), 0, 0);
         }
 
-        int deltaX = cursor.getX() - anchor.getX();
-        int deltaZ = cursor.getZ() - anchor.getZ();
-        boolean alongX = Math.abs(deltaX) >= Math.abs(deltaZ);
-        int pieces = Math.min(MAX_LINEAR_PIECES,
-                1 + (alongX ? Math.abs(deltaX) : Math.abs(deltaZ)));
+        if (isPathStructure(structure)) {
+            long columnsLong = Math.abs((long) cursor.getX() - anchor.getX()) + 1L;
+            long rowsLong = Math.abs((long) cursor.getZ() - anchor.getZ()) + 1L;
+            if (columnsLong > MAX_LINEAR_PIECES || rowsLong > MAX_LINEAR_PIECES
+                    || columnsLong * rowsLong > MAX_LINEAR_PIECES) {
+                return new LinearLayout(Rotation.NONE, List.of(), 0, 0);
+            }
+
+            int columns = (int) columnsLong;
+            int rows = (int) rowsLong;
+            int minX = Math.min(anchor.getX(), cursor.getX());
+            int minZ = Math.min(anchor.getZ(), cursor.getZ());
+            List<BlockPos> origins = new ArrayList<>(columns * rows);
+            for (int x = 0; x < columns; x++) {
+                for (int z = 0; z < rows; z++) {
+                    origins.add(new BlockPos(minX + x, anchor.getY(), minZ + z));
+                }
+            }
+            return new LinearLayout(Rotation.NONE, List.copyOf(origins), columns, rows);
+        }
+
+        long deltaX = Math.abs((long) cursor.getX() - anchor.getX());
+        long deltaZ = Math.abs((long) cursor.getZ() - anchor.getZ());
+        boolean alongX = deltaX >= deltaZ;
+        long piecesLong = 1L + (alongX ? deltaX : deltaZ);
+        if (piecesLong > MAX_LINEAR_PIECES) {
+            return new LinearLayout(Rotation.NONE, List.of(), 0, 0);
+        }
+        int pieces = (int) piecesLong;
         int step = alongX ? direction(anchor.getX(), cursor.getX())
                 : direction(anchor.getZ(), cursor.getZ());
         List<BlockPos> origins = new ArrayList<>(pieces);
@@ -234,20 +281,82 @@ public final class BuildingPlacement {
         }
         boolean anySupported = false;
         for (BlockPos cell : cells) {
-            if (!level.getBlockState(cell.below()).getCollisionShape(level, cell.below()).isEmpty()) {
+            BlockState support = level.getBlockState(cell.below());
+            if (support.getFluidState().isEmpty()
+                    && !support.getCollisionShape(level, cell.below()).isEmpty()) {
                 anySupported = true;
             }
             if (ignoredPositions != null && ignoredPositions.contains(cell.asLong())) {
                 continue;
             }
             BlockState existing = level.getBlockState(cell);
-            boolean pathSurface = path && isPathSurface(existing);
-            boolean existingPath = path && existing.is(Blocks.DIRT_PATH);
-            if (!existing.isAir() && !existing.canBeReplaced() && !pathSurface && !existingPath) {
+            if (!canReplaceExisting(level, cell, existing, true, path)) {
                 return Result.OBSTRUCTED;
             }
         }
         return anySupported ? Result.OK : Result.UNSUPPORTED;
+    }
+
+    /**
+     * Shared collision rule for previews, server placement, and block-by-block construction.
+     *
+     * <p>Natural surface and decorative blocks are harmless to remove when they occupy the
+     * structure's foundation layer. Deliberately non-colliding infrastructure is kept protected:
+     * torches and rails are easy to miss if the rule only looks at collision shapes.</p>
+     */
+    public static boolean canReplaceExisting(BlockGetter level, BlockPos position,
+                                              BlockState existing, boolean foundationLayer,
+                                              boolean pathSurface) {
+        return canReplaceExisting(level, position, existing, foundationLayer, pathSurface,
+                false, null);
+    }
+
+    /** Shared collision rule with an explicit natural-tree allowance and per-check scanner. */
+    public static boolean canReplaceExisting(BlockGetter level, BlockPos position,
+                                              BlockState existing, boolean foundationLayer,
+                                              boolean pathSurface, boolean allowNaturalTrees,
+                                              NaturalTreeClassifier.Scanner trees) {
+        if (level == null || position == null || existing == null || existing.isAir()) {
+            return existing != null && existing.isAir();
+        }
+        if (level.getBlockEntity(position) != null || !existing.getFluidState().isEmpty()) {
+            return false;
+        }
+        if (allowNaturalTrees && trees != null && trees.isNaturalTreePart(position)) {
+            return true;
+        }
+        if (isProtectedObstruction(existing)) {
+            return false;
+        }
+        if (foundationLayer && isFoundationSurface(existing)) {
+            return true;
+        }
+        if (pathSurface && isPathSurface(existing)) {
+            return true;
+        }
+        if (existing.canBeReplaced()
+                || existing.is(BlockTags.FLOWERS)
+                || existing.is(BlockTags.SAPLINGS)
+                || existing.is(BlockTags.REPLACEABLE)) {
+            return true;
+        }
+        // This covers fluid-free grass-like and other decorative blocks whose states do not carry
+        // the replaceable tag, while solid terrain and player structures remain obstructing.
+        return existing.getCollisionShape(level, position).isEmpty();
+    }
+
+    private static boolean isFoundationSurface(BlockState state) {
+        return isPathSurface(state) || state.is(BlockTags.DIRT)
+                || state.is(Blocks.SNOW) || state.is(Blocks.SNOW_BLOCK);
+    }
+
+    private static boolean isProtectedObstruction(BlockState state) {
+        return state.is(BlockTags.LOGS) || state.is(BlockTags.RAILS)
+                || state.is(Blocks.STONE)
+                || state.is(Blocks.TORCH) || state.is(Blocks.WALL_TORCH)
+                || state.is(Blocks.REDSTONE_TORCH) || state.is(Blocks.REDSTONE_WALL_TORCH)
+                || state.is(Blocks.SOUL_TORCH) || state.is(Blocks.SOUL_WALL_TORCH)
+                || state.is(Blocks.COPPER_TORCH) || state.is(Blocks.COPPER_WALL_TORCH);
     }
 
     /** Blocks a path may replace at its own surface layer. Stone, wood and structures stay safe. */
@@ -279,6 +388,24 @@ public final class BuildingPlacement {
             }
         }
         return occupied > 0 && occupied == paths;
+    }
+
+    /**
+     * Returns the path cells that are not already laid. Keeping this small decision beside the
+     * layout code makes the client preview and server charge use the same inclusive-cell rule.
+     */
+    public static List<BlockPos> newPathTiles(List<BlockPos> cells,
+                                              Predicate<BlockPos> existingPath) {
+        if (cells == null || cells.isEmpty()) {
+            return List.of();
+        }
+        List<BlockPos> result = new ArrayList<>(cells.size());
+        for (BlockPos cell : cells) {
+            if (cell != null && (existingPath == null || !existingPath.test(cell))) {
+                result.add(cell);
+            }
+        }
+        return List.copyOf(result);
     }
 
     /** Rotates a structure's size, because a quarter turn swaps its x and z extents. */

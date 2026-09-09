@@ -13,6 +13,7 @@ import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.level.levelgen.Heightmap;
 import net.neoforged.neoforge.client.event.CalculateDetachedCameraDistanceEvent;
 import net.neoforged.neoforge.client.event.CalculatePlayerTurnEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
@@ -31,11 +32,21 @@ public final class IsometricCameraController {
     private static final double DRAG_SPEED = 0.045D;
     private static final double SCROLL_STEP = 5.0D;
     private static final int TERRAIN_SCAN_RADIUS = 6;
+    private static final int TERRAIN_SCAN_DIAMETER = TERRAIN_SCAN_RADIUS * 2 + 1;
+    private static final int TERRAIN_COLUMN_COUNT = TERRAIN_SCAN_DIAMETER * TERRAIN_SCAN_DIAMETER;
+    private static final Heightmap.Types TERRAIN_HEIGHTMAP = Heightmap.Types.WORLD_SURFACE;
+    private static final BlockPos.MutableBlockPos TERRAIN_SCAN_POS = new BlockPos.MutableBlockPos();
 
     private static float cameraDistance = DEFAULT_CAMERA_DISTANCE;
     private static boolean dragging;
     private static double previousMouseX;
     private static double previousMouseY;
+    private static Level cachedTerrainLevel;
+    private static int cachedTerrainAnchorX;
+    private static int cachedTerrainAnchorZ;
+    private static final int[] cachedTerrainHeightmap = new int[TERRAIN_COLUMN_COUNT];
+    private static int cachedTerrainY;
+    private static boolean terrainCacheValid;
 
     private IsometricCameraController() {
     }
@@ -43,6 +54,11 @@ public final class IsometricCameraController {
     /** Keeps unit health readable at tactical zooms without turning the map into a wall of labels. */
     public static boolean shouldShowHealthBars() {
         return cameraDistance <= HEALTH_BAR_MAX_CAMERA_DISTANCE;
+    }
+
+    /** Current detached-camera distance, shared by close-zoom visual affordances. */
+    public static float cameraDistance() {
+        return cameraDistance;
     }
 
     public static void register() {
@@ -56,6 +72,7 @@ public final class IsometricCameraController {
     private static void onClientTick(ClientTickEvent.Post event) {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.player == null || minecraft.level == null || !RtsMode.isActive(minecraft.player)) {
+            clearTerrainCache();
             return;
         }
 
@@ -217,34 +234,82 @@ public final class IsometricCameraController {
     }
 
     private static void followTerrainHeight(Level level, LocalPlayer player) {
-        int terrainY = findTerrainY(level, Mth.floor(player.getX()), Mth.floor(player.getZ()), Mth.floor(player.getY()));
+        int centerX = Mth.floor(player.getX());
+        int centerZ = Mth.floor(player.getZ());
+        if (!terrainCacheValid || cachedTerrainLevel != level
+                || cachedTerrainAnchorX != centerX || cachedTerrainAnchorZ != centerZ) {
+            refreshTerrainCache(level, centerX, centerZ);
+        } else if (refreshCachedHeightmap(level, centerX, centerZ)) {
+            cachedTerrainY = findTerrainY(level, centerX, centerZ);
+        }
+
         player.setDeltaMovement(Vec3.ZERO);
-        player.setPos(player.getX(), terrainY + CAMERA_ANCHOR_GROUND_OFFSET, player.getZ());
+        double targetY = cachedTerrainY + CAMERA_ANCHOR_GROUND_OFFSET;
+        if (player.getY() != targetY) {
+            player.setPos(player.getX(), targetY, player.getZ());
+        }
     }
 
-    private static int findTerrainY(Level level, int centerX, int centerZ, int currentY) {
-        int scanTop = Math.min(level.getMaxY(), Math.max(currentY + 24, level.getSeaLevel() + 96));
+    /** Re-reads the cheap client heightmap values and reports whether any cached column moved. */
+    private static boolean refreshCachedHeightmap(Level level, int centerX, int centerZ) {
+        boolean changed = false;
+        int index = 0;
+        for (int dx = -TERRAIN_SCAN_RADIUS; dx <= TERRAIN_SCAN_RADIUS; dx++) {
+            for (int dz = -TERRAIN_SCAN_RADIUS; dz <= TERRAIN_SCAN_RADIUS; dz++) {
+                int height = level.getHeight(TERRAIN_HEIGHTMAP, centerX + dx, centerZ + dz);
+                if (cachedTerrainHeightmap[index] != height) {
+                    changed = true;
+                    cachedTerrainHeightmap[index] = height;
+                }
+                index++;
+            }
+        }
+        return changed;
+    }
+
+    /** Rebuilds the anchor cache only when the integer camera column or client level changes. */
+    private static void refreshTerrainCache(Level level, int centerX, int centerZ) {
+        cachedTerrainLevel = level;
+        cachedTerrainAnchorX = centerX;
+        cachedTerrainAnchorZ = centerZ;
+        refreshCachedHeightmap(level, centerX, centerZ);
+        cachedTerrainY = findTerrainY(level, centerX, centerZ);
+        terrainCacheValid = true;
+    }
+
+    /**
+     * Finds the highest recognised terrain block in the existing 13×13 anchor window. The client
+     * heightmap supplies the top of each column, so this only walks the short stack above terrain
+     * instead of scanning every Y level in the world once per tick. WORLD_SURFACE is intentional:
+     * the camera's existing terrain predicate includes non-motion-blocking snow layers.
+     */
+    private static int findTerrainY(Level level, int centerX, int centerZ) {
         int scanBottom = level.getMinY();
-
-        for (int y = scanTop; y >= scanBottom; y--) {
-            for (int radius = 0; radius <= TERRAIN_SCAN_RADIUS; radius++) {
-                for (int x = centerX - radius; x <= centerX + radius; x++) {
-                    for (int z = centerZ - radius; z <= centerZ + radius; z++) {
-                        if (Math.abs(x - centerX) != radius && Math.abs(z - centerZ) != radius) {
-                            continue;
-                        }
-
-                        BlockPos pos = new BlockPos(x, y, z);
-                        BlockState state = level.getBlockState(pos);
-                        if (isTerrain(state)) {
-                            return y + 1;
-                        }
+        int highestTerrain = Integer.MIN_VALUE;
+        int index = 0;
+        for (int dx = -TERRAIN_SCAN_RADIUS; dx <= TERRAIN_SCAN_RADIUS; dx++) {
+            for (int dz = -TERRAIN_SCAN_RADIUS; dz <= TERRAIN_SCAN_RADIUS; dz++) {
+                int heightmapY = cachedTerrainHeightmap[index++];
+                int scanTop = Math.min(level.getMaxY() - 1, heightmapY - 1);
+                if (scanTop < scanBottom) {
+                    continue;
+                }
+                for (int y = scanTop; y >= scanBottom; y--) {
+                    TERRAIN_SCAN_POS.set(centerX + dx, y, centerZ + dz);
+                    if (isTerrain(level.getBlockState(TERRAIN_SCAN_POS))) {
+                        highestTerrain = Math.max(highestTerrain, y);
+                        break;
                     }
                 }
             }
         }
 
-        return level.getSeaLevel();
+        return highestTerrain == Integer.MIN_VALUE ? level.getSeaLevel() : highestTerrain + 1;
+    }
+
+    private static void clearTerrainCache() {
+        cachedTerrainLevel = null;
+        terrainCacheValid = false;
     }
 
     private static boolean isTerrain(BlockState state) {

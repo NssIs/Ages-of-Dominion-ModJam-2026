@@ -21,7 +21,14 @@ import java.util.function.Predicate;
 /** Persistent metadata for structures that are being assembled block by block. */
 public final class RtsConstructionStore extends SavedData {
     public record Entry(long id, UUID owner, Identifier structure, BlockPos origin, Rotation rotation,
-                        int totalBlocks, int placedBlocks, int workProgress) {
+                        int totalBlocks, int placedBlocks, int workProgress, boolean layered) {
+        /** Source compatibility for callers and saves created before layered construction existed. */
+        public Entry(long id, UUID owner, Identifier structure, BlockPos origin, Rotation rotation,
+                     int totalBlocks, int placedBlocks, int workProgress) {
+            this(id, owner, structure, origin, rotation, totalBlocks, placedBlocks, workProgress,
+                    false);
+        }
+
         public Entry {
             origin = origin == null ? BlockPos.ZERO : origin.immutable();
             totalBlocks = Math.max(1, totalBlocks);
@@ -37,7 +44,8 @@ public final class RtsConstructionStore extends SavedData {
                 Rotation.CODEC.fieldOf("rotation").forGetter(Entry::rotation),
                 Codec.INT.fieldOf("total_blocks").forGetter(Entry::totalBlocks),
                 Codec.INT.fieldOf("placed_blocks").forGetter(Entry::placedBlocks),
-                Codec.INT.fieldOf("work_progress").forGetter(Entry::workProgress)
+                Codec.INT.fieldOf("work_progress").forGetter(Entry::workProgress),
+                Codec.BOOL.optionalFieldOf("layered", false).forGetter(Entry::layered)
         ).apply(instance, Entry::new));
     }
 
@@ -89,8 +97,14 @@ public final class RtsConstructionStore extends SavedData {
 
     public Entry add(UUID owner, Identifier structure, BlockPos origin, Rotation rotation,
                      int totalBlocks) {
+        return add(owner, structure, origin, rotation, totalBlocks, false);
+    }
+
+    /** Adds a foundation with an explicit construction order; old callers retain palette order. */
+    public Entry add(UUID owner, Identifier structure, BlockPos origin, Rotation rotation,
+                     int totalBlocks, boolean layered) {
         Entry entry = new Entry(nextId++, owner, structure, origin, rotation,
-                totalBlocks, 0, 0);
+                totalBlocks, 0, 0, layered);
         entries.put(entry.id(), entry);
         setDirty();
         return entry;

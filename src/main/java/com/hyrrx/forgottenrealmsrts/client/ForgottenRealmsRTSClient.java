@@ -29,6 +29,7 @@ public final class ForgottenRealmsRTSClient {
       RtsMouseController.register();
       RtsGuiScaleGuard.register();
       IsometricCameraController.register();
+      NaturalTreeTransparencyController.register();
       RtsKeyBindings.register(modEventBus);
       BuildGhost.register();
       BuildingSelectionController.register();

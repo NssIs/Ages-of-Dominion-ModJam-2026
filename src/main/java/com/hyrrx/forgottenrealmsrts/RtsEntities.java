@@ -294,8 +294,19 @@ public final class RtsEntities {
    }
 
    public static boolean ensureTownWorker(ServerPlayer player) {
+      if (player == null || !(player.level() instanceof ServerLevel level)) {
+         return false;
+      }
+
       if (RtsEconomy.townWorkerSpawned(player)) {
-         return true;
+         if (!RtsCivilization.isFounded(player)) {
+            return true;
+         }
+         Optional<TownHallSite> existing = locateTownHall(player);
+         if (existing.isPresent() && hasLivingWorker(level, existing.get())) {
+            return true;
+         }
+         RtsEconomy.setTownWorkerSpawned(player, false);
       }
 
       if (!RtsCivilization.isFounded(player)) {
@@ -308,7 +319,12 @@ public final class RtsEntities {
       }
 
       RtsEconomy.setTownHallPlaced(player, true);
-      ServerLevel level = player.level();
+      // Older saves can have a living Realm Villager beside the hall while the new attachment is
+      // still false. Adopt that worker instead of creating a duplicate starter during recovery.
+      if (hasLivingWorker(level, site.get())) {
+         RtsEconomy.setTownWorkerSpawned(player, true);
+         return true;
+      }
       boolean spawned = placeVillager(level, site.get());
       if (!spawned) {
          return false;
@@ -318,6 +334,15 @@ public final class RtsEntities {
       RtsEconomy.setTownWorkerSpawned(player, true);
       player.sendOverlayMessage(Component.literal("Realm Villager spawned"));
       return true;
+   }
+
+   private static boolean hasLivingWorker(ServerLevel level, TownHallSite site) {
+      BlockPos center = new BlockPos(
+            site.origin().getX() + site.rotatedSize().getX() / 2,
+            site.origin().getY() + 1,
+            site.origin().getZ() + site.rotatedSize().getZ() / 2);
+      return !level.getEntitiesOfClass(RtsVillagerEntity.class,
+            new AABB(center).inflate(POPULATION_SCAN_RADIUS), RtsVillagerEntity::isAlive).isEmpty();
    }
 
    /** Gives a newly founded realm its guaranteed worker, swordsman, and archer opening roster. */
@@ -457,15 +482,7 @@ public final class RtsEntities {
    }
 
    private static boolean isWalkableColumn(ServerLevel level, int x, int z, int feetY) {
-      if (feetY <= level.getMinY() || feetY + 1 >= level.getMaxY()) {
-         return false;
-      }
-      BlockPos feet = new BlockPos(x, feetY, z);
-      BlockPos head = feet.above();
-      BlockPos support = feet.below();
-      return level.getBlockState(feet).isAir()
-         && level.getBlockState(head).isAir()
-         && !level.getBlockState(support).getCollisionShape(level, support).isEmpty();
+      return RtsNavigationSafety.isSafeFeet(level, new BlockPos(x, feetY, z));
    }
 
    public static List<BlockPos> buildingCenters(ServerPlayer player, String needle) {
@@ -665,6 +682,10 @@ public final class RtsEntities {
 
    private static boolean placeVillager(ServerLevel level, RtsEntities.TownHallSite site) {
       BlockPos spawnPosition = frontDoorSpawnPosition(level, site);
+      if (spawnPosition == null) {
+         ForgottenRealmsRTS.LOGGER.warn("Could not find a safe Town Hall worker spawn cell.");
+         return false;
+      }
       int spawnX = spawnPosition.getX();
       int spawnZ = spawnPosition.getZ();
       int y = spawnPosition.getY();
@@ -704,9 +725,28 @@ public final class RtsEntities {
       }
 
       SpawnPoint fallback = frontSpawn(site, 0);
-      return new BlockPos(fallback.x(),
-            findBottomFloorY(level, fallback.x(), fallback.z(), site.origin().getY() + 1),
-            fallback.z());
+      for (int radius = 1; radius <= 4; radius++) {
+         for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+               if (Math.abs(dx) != radius && Math.abs(dz) != radius) {
+                  continue;
+               }
+               Optional<BlockPos> found = RtsNavigationSafety.findSafeFeet(level,
+                     fallback.x() + dx, fallback.z() + dz, site.origin().getY() + 1, 4);
+               if (found.isEmpty()) {
+                  continue;
+               }
+               BlockPos candidate = found.get();
+               AABB cell = new AABB(candidate.getX(), candidate.getY(), candidate.getZ(),
+                     candidate.getX() + 1.0D, candidate.getY() + 2.0D,
+                     candidate.getZ() + 1.0D);
+               if (level.getEntitiesOfClass(LivingEntity.class, cell, LivingEntity::isAlive).isEmpty()) {
+                  return candidate;
+               }
+            }
+         }
+      }
+      return null;
    }
 
    /** Two soldiers can share the Town Hall frontage without being placed inside its footprint. */

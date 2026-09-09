@@ -411,6 +411,25 @@ public final class RtsHudState {
         return buildings.getOrDefault(categoryKeys.get(selectedCategory), List.of());
     }
 
+    /**
+     * Derives supernatural construction from the server's current building catalog. The catalog
+     * already includes dynamic prices such as the first free Coal Mine; a missing catalog is
+     * deliberately treated as unknown rather than guessed from the construction payload.
+     */
+    public static boolean isAutonomousFoundation(ConstructionInfo construction) {
+        if (construction == null) {
+            return false;
+        }
+        for (List<BuildingInfo> category : buildings.values()) {
+            for (BuildingInfo building : category) {
+                if (construction.structure().equals(building.id())) {
+                    return building.free();
+                }
+            }
+        }
+        return false;
+    }
+
     public static BuildingInfo selectedBuilding() {
         return selectedBuilding;
     }
@@ -473,7 +492,13 @@ public final class RtsHudState {
         return selectedConstruction;
     }
 
-    /** Selects an in-progress foundation and clears the completed-building/action state. */
+    /**
+     * Selects an in-progress foundation and clears the completed-building/action state.
+     *
+     * <p>The unit selection deliberately survives here. A server status refresh can replace the
+     * selected foundation snapshot while the player is holding a worker selection; clearing the
+     * units would make the bottom-bar panel flicker from the worker back to the foundation.
+     */
     public static void setSelectedConstruction(ConstructionInfo construction) {
         if (construction != null && (selectedConstruction == null
                 || selectedConstruction.id() != construction.id())) {
@@ -486,7 +511,6 @@ public final class RtsHudState {
             selectedMineStatus = null;
             selectedFarmStatus = null;
             selectedTarget = null;
-            selectedUnits = List.of();
         }
     }
 
@@ -595,22 +619,28 @@ public final class RtsHudState {
 
     public static void setSelectedUnit(net.minecraft.world.entity.LivingEntity unit) {
         selectedTarget = null;
-        selectedUnits = unit != null && unit.isAlive() && RtsEntities.isAlliedUnit(unit)
-                ? List.of(unit) : List.of();
-        // A world entity took priority over the building ray. Clear the building even when the
-        // clicked entity was hostile, so a rejected enemy click cannot leave stale building data in
-        // the command panel.
+        boolean allied = unit != null && unit.isAlive() && RtsEntities.isAlliedUnit(unit);
+        selectedUnits = allied ? List.of(unit) : List.of();
+        // A world entity took priority over the building ray. Clear completed-building state even
+        // when the clicked entity was hostile, so a rejected enemy click cannot leave stale building
+        // data in the command panel. An allied unit deliberately keeps the foundation context for
+        // construction assignment.
         if (unit != null) {
             closeUpgradePopup();
             selectedBuilding = null;
             selectedPlacedBuilding = null;
-            selectedConstruction = null;
+            if (!allied) {
+                selectedConstruction = null;
+            }
             selectedMineStatus = null;
             selectedFarmStatus = null;
         }
     }
 
-    /** Replaces the current selection with the allied units captured by a drag rectangle. */
+    /**
+     * Replaces the current selection with the allied units captured by a drag rectangle.
+     * A non-empty list keeps the selected foundation as assignment context; an empty list clears it.
+     */
     public static void setSelectedUnits(Collection<? extends net.minecraft.world.entity.LivingEntity> units) {
         List<net.minecraft.world.entity.LivingEntity> clean = new ArrayList<>();
         if (units != null) {
@@ -625,7 +655,9 @@ public final class RtsHudState {
         selectedTarget = null;
         selectedBuilding = null;
         selectedPlacedBuilding = null;
-        selectedConstruction = null;
+        if (clean.isEmpty()) {
+            selectedConstruction = null;
+        }
         selectedMineStatus = null;
         selectedFarmStatus = null;
         closeUpgradePopup();

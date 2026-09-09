@@ -18,6 +18,7 @@ import com.hyrrx.forgottenrealmsrts.network.ModPayloads;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.Mirror;
 import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemplate;
+import net.minecraft.world.level.pathfinder.Path;
 import net.minecraft.world.phys.AABB;
 
 /** Server-authoritative worker assignments and timed output for the authored mine structures. */
@@ -121,6 +122,7 @@ public final class RtsMineOrders {
         int available = Math.max(0, capacity - occupied);
         int assigned = 0;
         int alreadyAssigned = 0;
+        boolean sawUnreachableMine = false;
 
         for (Integer entityId : selectedIds) {
             Entity entity = level.getEntity(entityId);
@@ -137,6 +139,12 @@ public final class RtsMineOrders {
                 break;
             }
 
+            BlockPos interior = mineInterior(level, entry, template.get(), worker);
+            if (interior == null) {
+                sawUnreachableMine = true;
+                continue;
+            }
+
             // A mine assignment is a deliberate order and cancels woodcutting or a prior move.
             RtsUnitOrders.clear(worker);
             RtsWorkerOrders.cancel(worker);
@@ -144,7 +152,7 @@ public final class RtsMineOrders {
             worker.setMineBuildingId(buildingId);
             worker.setWorkState(WorkState.GOING_TO_MINE);
             worker.leaveMine();
-            navigateToMine(worker, mineInterior(level, entry, template.get()));
+            navigateToMine(worker, interior);
             available--;
             assigned++;
         }
@@ -158,6 +166,9 @@ public final class RtsMineOrders {
         } else if (capacity <= occupied) {
             player.sendOverlayMessage(Component.literal(
                     "The " + resourceFor(entry.structure()).label() + " Mine is full (" + capacity + ")."));
+        } else if (sawUnreachableMine) {
+            player.sendOverlayMessage(Component.literal(
+                    "No safe interior route is available for that mine."));
         }
     }
 
@@ -250,6 +261,10 @@ public final class RtsMineOrders {
             }
 
             MineSite site = mineSite(level, entry, template.get());
+            if (site.interior() == null) {
+                beginReturn(level, worker, townCenter);
+                continue;
+            }
             if (worker.getWorkState() == WorkState.GOING_TO_MINE) {
                 worker.leaveMine();
                 if (site.bounds().contains(worker.getX(), worker.getY(), worker.getZ())
@@ -359,6 +374,12 @@ public final class RtsMineOrders {
     /** Finds a real walkable air cell inside the placed shell, preferring the visual centre. */
     private static BlockPos mineInterior(ServerLevel level, RtsBuildingStore.Entry entry,
                                          StructureTemplate template) {
+        return mineInterior(level, entry, template, null);
+    }
+
+    private static BlockPos mineInterior(ServerLevel level, RtsBuildingStore.Entry entry,
+                                         StructureTemplate template,
+                                         RtsVillagerEntity worker) {
         BlockPos origin = normalizedOrigin(template, entry);
         net.minecraft.core.Vec3i size = BuildingPlacement.rotateSize(template.getSize(), entry.rotation());
         double centreX = origin.getX() + size.getX() * 0.5D;
@@ -371,6 +392,14 @@ public final class RtsMineOrders {
                     BlockPos candidate = origin.offset(x, y, z);
                     if (!isWalkable(level, candidate)) {
                         continue;
+                    }
+                    if (worker != null) {
+                        Path path = worker.getNavigation().createPath(candidate, 1);
+                        if (path == null || !path.canReach()
+                                || !RtsNavigationSafety.isSafePath(level,
+                                worker.blockPosition(), path)) {
+                            continue;
+                        }
                     }
                     double dx = candidate.getX() + 0.5D - centreX;
                     double dz = candidate.getZ() + 0.5D - centreZ;
@@ -385,18 +414,19 @@ public final class RtsMineOrders {
         if (best != null) {
             return best;
         }
-        return origin.offset(size.getX() / 2, Math.min(1, Math.max(0, size.getY() - 1)), size.getZ() / 2);
+        return null;
     }
 
     private static boolean isWalkable(ServerLevel level, BlockPos feet) {
-        return level.getBlockState(feet).isAir()
-                && level.getBlockState(feet.above()).isAir()
-                && !level.getBlockState(feet.below()).getCollisionShape(level, feet.below()).isEmpty();
+        return RtsNavigationSafety.isSafeFeet(level, feet);
     }
 
     private static void navigateToMine(RtsVillagerEntity worker, BlockPos target) {
-        if (worker.level() instanceof ServerLevel level) {
+        if (target != null && worker.level() instanceof ServerLevel level) {
             RtsUnitOrders.moveToSmart(worker, level, target, 0.9D);
+        } else if (target == null) {
+            worker.getNavigation().stop();
+            RtsUnitOrders.clearNavigation(worker);
         }
     }
 

@@ -2,14 +2,19 @@ package com.hyrrx.forgottenrealmsrts.client.build;
 
 import com.hyrrx.forgottenrealmsrts.RtsEntities;
 import com.hyrrx.forgottenrealmsrts.BuildingPlacement;
+import com.hyrrx.forgottenrealmsrts.client.NaturalTreeTransparencyController;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.ClipContext;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.VoxelShape;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 
@@ -25,8 +30,7 @@ public final class BuildingRaycast {
         if (ray == null) {
             return null;
         }
-        BlockHitResult hit = minecraft.level.clip(new ClipContext(
-                ray[0], ray[1], ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, minecraft.player));
+        BlockHitResult hit = clipIgnoringNaturalTrees(minecraft, ray[0], ray[1]);
         return hit.getType() == HitResult.Type.BLOCK ? hit : null;
     }
 
@@ -41,8 +45,7 @@ public final class BuildingRaycast {
         }
         Vec3 from = ray[0];
         Vec3 to = ray[1];
-        BlockHitResult block = minecraft.level.clip(new ClipContext(
-                from, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, minecraft.player));
+        BlockHitResult block = clipIgnoringNaturalTrees(minecraft, from, to);
         if (block.getType() == HitResult.Type.BLOCK) {
             to = block.getLocation();
         }
@@ -79,6 +82,43 @@ public final class BuildingRaycast {
         Vec3 from = camera.position().add(near.x, near.y, near.z);
         Vec3 to = from.add(direction.scale(PICK_RANGE));
         return new Vec3[]{from, to};
+    }
+
+    /**
+     * Uses vanilla's exact voxel traversal while treating only the controller-authoritative faded
+     * position set as visual cover. The set already contains complete, recognised natural-tree
+     * components, so a ray does not need to classify a tree again. A tree that is not in the
+     * close-zoom camera/player corridor is still a normal obstruction; fluids, block entities,
+     * tracked buildings, and ordinary solid player structures return the first hit exactly as they
+     * did before the fade treatment.
+     */
+    private static BlockHitResult clipIgnoringNaturalTrees(Minecraft minecraft, Vec3 from, Vec3 to) {
+        ClipContext context = new ClipContext(
+                from, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, minecraft.player);
+        return BlockGetter.traverseBlocks(from, to, context, (clip, position) -> {
+            if (NaturalTreeTransparencyController.isFaded(position)) {
+                return null;
+            }
+
+            BlockState blockState = minecraft.level.getBlockState(position);
+            FluidState fluidState = minecraft.level.getFluidState(position);
+            VoxelShape blockShape = clip.getBlockShape(blockState, minecraft.level, position);
+            BlockHitResult blockResult = minecraft.level.clipWithInteractionOverride(
+                    clip.getFrom(), clip.getTo(), position, blockShape, blockState);
+            VoxelShape fluidShape = clip.getFluidShape(fluidState, minecraft.level, position);
+            BlockHitResult liquidResult = fluidShape.clip(
+                    clip.getFrom(), clip.getTo(), position);
+            double blockDistance = blockResult == null ? Double.MAX_VALUE
+                    : clip.getFrom().distanceToSqr(blockResult.getLocation());
+            double liquidDistance = liquidResult == null ? Double.MAX_VALUE
+                    : clip.getFrom().distanceToSqr(liquidResult.getLocation());
+            return blockDistance <= liquidDistance ? blockResult : liquidResult;
+        }, clip -> {
+            Vec3 delta = clip.getFrom().subtract(clip.getTo());
+            return BlockHitResult.miss(clip.getTo(),
+                    Direction.getApproximateNearest(delta.x, delta.y, delta.z),
+                    BlockPos.containing(clip.getTo()));
+        });
     }
 
     /**

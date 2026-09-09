@@ -60,6 +60,9 @@ public final class ForgottenRealmsRTS {
         NeoForge.EVENT_BUS.addListener((ServerStartedEvent event) -> {
             BuildingCosts.load(event.getServer());
             RtsDayCycle.apply(event.getServer().overworld());
+            RtsTerrainProfile profile = RtsTerrainProfile.get(event.getServer().overworld());
+            LOGGER.info("Natural terrain profile v{} active; starting basin hint recorded at {}.",
+                    profile.profileVersion(), profile.startingBasin());
         });
 
         NeoForge.EVENT_BUS.addListener(this::onPlayerTick);

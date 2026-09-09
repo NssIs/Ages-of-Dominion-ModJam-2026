@@ -151,6 +151,7 @@ public final class RtsBottomBarHud {
     private static final int COLOR_LOCKED_WASH = 0xA012100C;
     private static final int COLOR_COST_OK = 0xFFD8CFA8;
     private static final int COLOR_COST_SHORT = 0xFFD86A5A;
+    private static final int COLOR_AUTOMATIC = 0xFFF4D35E;
 
     /** The tray slot under the cursor this frame, for the name/price tooltip. Reset every frame. */
     private static BuildingInfo hoveredBuilding;
@@ -584,13 +585,14 @@ public final class RtsBottomBarHud {
                 + construction.totalBlocks(), COLOR_UNIT_LABEL, null, available);
         addWrapped(font, rows, "Builders " + construction.assignedWorkers(), COLOR_UNIT_LABEL,
                 null, available);
-        if (percent >= 100) {
+        if (RtsHudState.isAutonomousFoundation(construction)) {
+            addWrapped(font, rows, "BUILDING AUTOMATICALLY", COLOR_AUTOMATIC, null, available);
+        } else if (percent >= 100) {
             addWrapped(font, rows, "Finishing structure...", COLOR_UNIT_LABEL, null, available);
         } else if (construction.assignedWorkers() > 0) {
-            addWrapped(font, rows, "Crew is assembling the site", COLOR_UNIT_LABEL, null, available);
+            addWrapped(font, rows, "IN PROGRESS", COLOR_COST_OK, null, available);
         } else {
-            addWrapped(font, rows, "Select villagers, then click this site", COLOR_COST_SHORT,
-                    null, available);
+            addWrapped(font, rows, "REQUIRES WORKER", COLOR_COST_SHORT, null, available);
         }
         return rows;
     }
@@ -717,8 +719,11 @@ public final class RtsBottomBarHud {
     }
 
     private static String workerInventory(RtsVillagerEntity worker) {
-        int carried = worker.getCarriedWood();
-        return carried <= 0 ? "Empty" : "Wood " + carried + " / " + RtsWorkerOrders.WOOD_CAPACITY;
+        int wood = worker.getCarriedWood();
+        int food = worker.getCarriedFood();
+        return wood <= 0 && food <= 0
+                ? "Empty"
+                : "Wood " + wood + " / " + RtsWorkerOrders.WOOD_CAPACITY + " · Food " + food;
     }
 
     private static List<Row> selectedTargetRows(Font font,

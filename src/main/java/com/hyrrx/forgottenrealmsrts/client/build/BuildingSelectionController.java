@@ -228,6 +228,7 @@ public final class BuildingSelectionController {
         if (!selected.isEmpty()) {
             if (hit == null) {
                 RtsHudState.clearSelectedUnits();
+                RtsHudState.setSelectedConstruction(null);
                 return;
             }
             requestUnitOrder(minecraft, selected, hit);
@@ -239,14 +240,35 @@ public final class BuildingSelectionController {
             RtsHudState.setSelectedPlacedBuilding(null);
             return;
         }
+        if (!insideSelectedConstruction(hit.getBlockPos())) {
+            RtsHudState.setSelectedConstruction(null);
+        }
         ClientPacketDistributor.sendToServer(new RequestBuildingSelectionPayload(hit.getBlockPos()));
     }
 
     /** A selected unit click first resolves the tracked building, then falls back to tree/move. */
     private static void requestUnitOrder(Minecraft minecraft, List<LivingEntity> selected,
                                          BlockHitResult hit) {
+        if (!insideSelectedConstruction(hit.getBlockPos())) {
+            RtsHudState.setSelectedConstruction(null);
+        }
         pendingOrder = new PendingOrder(List.copyOf(selected), hit.getBlockPos(), movementTarget(hit));
         ClientPacketDistributor.sendToServer(new RequestBuildingSelectionPayload(hit.getBlockPos()));
+    }
+
+    /** Keeps a foundation outline only while the pending click can still assign that foundation. */
+    private static boolean insideSelectedConstruction(BlockPos clicked) {
+        ConstructionInfo construction = RtsHudState.selectedConstruction();
+        if (construction == null || clicked == null) {
+            return false;
+        }
+        BlockPos origin = construction.origin();
+        return clicked.getX() >= origin.getX()
+                && clicked.getX() < origin.getX() + construction.sizeX()
+                && clicked.getY() >= origin.getY()
+                && clicked.getY() < origin.getY() + construction.sizeY()
+                && clicked.getZ() >= origin.getZ()
+                && clicked.getZ() < origin.getZ() + construction.sizeZ();
     }
 
     /** Completes a pending order after the server has identified the clicked structure, if any. */
@@ -267,6 +289,10 @@ public final class BuildingSelectionController {
                 .filter(unit -> unit != null && unit.isAlive())
                 .toList();
         if (selected.isEmpty()) {
+            if (minecraft.player != null) {
+                minecraft.player.sendOverlayMessage(net.minecraft.network.chat.Component.literal(
+                        "Select a living worker."));
+            }
             RtsHudState.clearSelectedUnits();
             return true;
         }
@@ -290,7 +316,7 @@ public final class BuildingSelectionController {
             }
             if (workers.isEmpty() && nonWorkers.isEmpty()) {
                 minecraft.player.sendOverlayMessage(net.minecraft.network.chat.Component.literal(
-                        "Select villagers to repair."));
+                        "Select workers to repair."));
             }
             RtsHudState.clearSelectedUnits();
             return true;
@@ -312,7 +338,9 @@ public final class BuildingSelectionController {
         }
 
         if (building != null && RtsFarmOrders.isFarmStructure(building.structure())) {
-            BlockPos farmTarget = building.origin().offset(building.sizeX() / 2,
+            // The server chooses the exact terrain-aware perimeter cell; keep the client breadcrumb
+            // outside the shell instead of advertising the old, unreachable interior target.
+            BlockPos farmTarget = building.origin().offset(-1,
                     Math.min(1, Math.max(0, building.sizeY() - 1)), building.sizeZ() / 2);
             if (!workers.isEmpty()) {
                 ClientPacketDistributor.sendToServer(new AssignFarmPayload(ids(workers), building.id()));
@@ -321,6 +349,10 @@ public final class BuildingSelectionController {
             if (!nonWorkers.isEmpty()) {
                 minecraft.player.sendOverlayMessage(net.minecraft.network.chat.Component.literal(
                         "Only workers can tend a Farm."));
+            }
+            if (workers.isEmpty() && nonWorkers.isEmpty()) {
+                minecraft.player.sendOverlayMessage(net.minecraft.network.chat.Component.literal(
+                        "Select a living worker."));
             }
             RtsHudState.clearSelectedUnits();
             return true;
@@ -367,6 +399,14 @@ public final class BuildingSelectionController {
         List<LivingEntity> nonWorkers = selected.stream()
                 .filter(unit -> !(unit instanceof RtsVillagerEntity))
                 .toList();
+        if (RtsHudState.isAutonomousFoundation(construction)) {
+            if (minecraft.player != null) {
+                minecraft.player.sendOverlayMessage(net.minecraft.network.chat.Component.literal(
+                        "BUILDING AUTOMATICALLY"));
+            }
+            RtsHudState.clearSelectedUnits();
+            return true;
+        }
         BlockPos siteTarget = construction.origin().offset(construction.sizeX() / 2, 0,
                 construction.sizeZ() / 2);
         if (!workers.isEmpty()) {
@@ -380,7 +420,7 @@ public final class BuildingSelectionController {
         }
         if (workers.isEmpty() && nonWorkers.isEmpty()) {
             minecraft.player.sendOverlayMessage(net.minecraft.network.chat.Component.literal(
-                    "Select villagers to build."));
+                    "Select workers to build."));
         }
         RtsHudState.clearSelectedUnits();
         return true;

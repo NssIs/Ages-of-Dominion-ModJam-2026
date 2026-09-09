@@ -11,6 +11,7 @@ import java.util.Map;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.core.BlockPos;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.RenderGuiEvent;
 import net.neoforged.neoforge.common.NeoForge;
@@ -45,6 +46,24 @@ public final class RtsBuildingHealthBarRenderer {
         BUILDINGS.clear();
     }
 
+    /** Whether a client-known tracked building owns this block and must not be called natural. */
+    public static boolean protects(BlockPos position) {
+        if (position == null) {
+            return false;
+        }
+        for (BuildingHealthPayload.BuildingHealth building : BUILDINGS.values()) {
+            if (position.getX() >= building.origin().getX()
+                    && position.getX() < building.origin().getX() + building.sizeX()
+                    && position.getY() >= building.origin().getY()
+                    && position.getY() < building.origin().getY() + building.sizeY()
+                    && position.getZ() >= building.origin().getZ()
+                    && position.getZ() < building.origin().getZ() + building.sizeZ()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static void onRenderGui(RenderGuiEvent.Post event) {
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft.screen != null || minecraft.player == null || minecraft.level == null
@@ -55,7 +74,13 @@ public final class RtsBuildingHealthBarRenderer {
         Font font = minecraft.font;
         Vec3 camera = minecraft.gameRenderer.getMainCamera().position();
         GuiGraphicsExtractor graphics = event.getGuiGraphics();
+        PlacedBuildingInfo selected = RtsHudState.selectedPlacedBuilding();
         for (BuildingHealthPayload.BuildingHealth building : BUILDINGS.values()) {
+            boolean damaged = building.health() < building.maxHealth();
+            boolean explicitlySelected = selected != null && selected.id() == building.id();
+            if (!damaged && !explicitlySelected) {
+                continue;
+            }
             Vec3 world = new Vec3(
                     building.origin().getX() + building.sizeX() * 0.5D,
                     building.origin().getY() + Math.max(1, building.sizeY()) + 0.75D,
@@ -72,7 +97,6 @@ public final class RtsBuildingHealthBarRenderer {
             int left = point.x() - BAR_WIDTH / 2;
             int right = left + BAR_WIDTH;
             int bottom = barTop + BAR_HEIGHT;
-            boolean damaged = building.health() < building.maxHealth();
             int border = 0xFFE2B15D;
             int track = 0xFF34251B;
             int fill = damaged ? 0xFFD68A42 : 0xFF72C477;

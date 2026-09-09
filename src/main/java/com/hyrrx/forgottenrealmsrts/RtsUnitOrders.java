@@ -40,12 +40,7 @@ public final class RtsUnitOrders {
     private RtsUnitOrders() {
     }
 
-    /**
-     * Starts a real ground path and falls back to a nearby walkable cell when the requested block is
-     * inside a wall, on a roof, or otherwise not a valid feet position. The vanilla navigation
-     * system still owns the actual path; this only gives it a better destination and a fresh route
-     * when an RTS unit has become stuck.
-     */
+    /** Starts a validated ground path, retrying later when no safe route exists. */
     public static boolean moveToSmart(Mob unit, ServerLevel level, BlockPos requested, double speed) {
         if (unit == null || level == null || requested == null || !unit.isAlive()) {
             return false;
@@ -54,6 +49,15 @@ public final class RtsUnitOrders {
         long now = level.getGameTime();
         NavigationRequest previous = NAVIGATION.get(unit.getUUID());
         if (previous != null && previous.requested().equals(requested)) {
+            if (!unit.getNavigation().isDone()) {
+                Path activePath = unit.getNavigation().getPath();
+                if (activePath == null
+                        || !RtsNavigationSafety.isSafePath(level, unit.blockPosition(), activePath)) {
+                    unit.getNavigation().stop();
+                    NAVIGATION.remove(unit.getUUID());
+                    return false;
+                }
+            }
             boolean arrived = previous.goal() != null
                     && unit.distanceToSqr(previous.goal().getX() + 0.5D,
                     previous.goal().getY(), previous.goal().getZ() + 0.5D) <= 2.25D;
@@ -65,23 +69,35 @@ public final class RtsUnitOrders {
 
         NavigationRoute route = findReachableRoute(unit, level, requested);
         if (route.path() != null) {
+            if (!RtsNavigationSafety.isSafePath(level, unit.blockPosition(), route.path())) {
+                unit.getNavigation().stop();
+                NAVIGATION.put(unit.getUUID(), new NavigationRequest(requested.immutable(), null,
+                        now + FAILED_NAVIGATION_RETRY_TICKS));
+                return false;
+            }
             boolean moved = unit.getNavigation().moveTo(route.path(), speed);
+            Path activePath = unit.getNavigation().getPath();
+            if (moved && (activePath == null
+                    || !RtsNavigationSafety.isSafePath(level, unit.blockPosition(), activePath))) {
+                unit.getNavigation().stop();
+                NAVIGATION.put(unit.getUUID(), new NavigationRequest(requested.immutable(), null,
+                        now + FAILED_NAVIGATION_RETRY_TICKS));
+                return false;
+            }
             NAVIGATION.put(unit.getUUID(), new NavigationRequest(requested.immutable(), route.goal(),
                     now + (moved ? NAVIGATION_RETRY_TICKS : FAILED_NAVIGATION_RETRY_TICKS)));
             return moved;
         }
 
-        // An interior mine cell can be reachable through a door even when the pathfinder's
-        // destination probe does not mark the final node as reachable. Preserve that direct attempt.
-        BlockPos goal = route.goal();
-        boolean moved = unit.getNavigation().moveTo(goal.getX() + 0.5D, goal.getY(), goal.getZ() + 0.5D,
-                speed);
-        NAVIGATION.put(unit.getUUID(), new NavigationRequest(requested.immutable(), goal,
+        // Never turn an unreachable request into a raw coordinate move. A worker waits for the
+        // next director pass to re-plan after the terrain or obstruction changes.
+        unit.getNavigation().stop();
+        NAVIGATION.put(unit.getUUID(), new NavigationRequest(requested.immutable(), null,
                 now + FAILED_NAVIGATION_RETRY_TICKS));
-        return moved;
+        return false;
     }
 
-    /** Repaths to a moving target first, then uses the same walkable-cell fallback if needed. */
+    /** Repaths to a moving target through the same safe-cell validator. */
     public static boolean moveToSmart(Mob unit, ServerLevel level, LivingEntity target, double speed) {
         if (target == null || !target.isAlive()) {
             return false;
@@ -205,10 +221,10 @@ public final class RtsUnitOrders {
     }
 
     private static NavigationRoute findReachableRoute(Mob unit, ServerLevel level, BlockPos requested) {
-        BlockPos fallback = requested;
-        if (isWalkable(level, requested)) {
+        if (RtsNavigationSafety.isSafeFeet(level, requested)) {
             Path direct = unit.getNavigation().createPath(requested, 1);
-            if (direct != null && direct.canReach()) {
+            if (direct != null && direct.canReach()
+                    && RtsNavigationSafety.isSafePath(level, unit.blockPosition(), direct)) {
                 return new NavigationRoute(requested, direct);
             }
         }
@@ -225,11 +241,8 @@ public final class RtsUnitOrders {
                     int z = requested.getZ() + dz;
                     int y = RtsEntities.findBottomFloorY(level, x, z, requested.getY());
                     BlockPos candidate = new BlockPos(x, y, z);
-                    if (!isWalkable(level, candidate)) {
+                    if (!RtsNavigationSafety.isSafeFeet(level, candidate)) {
                         continue;
-                    }
-                    if (fallback.equals(requested)) {
-                        fallback = candidate;
                     }
                     candidates.add(candidate);
                     if (candidates.size() >= MAX_FALLBACK_PATH_PROBES) {
@@ -244,11 +257,12 @@ public final class RtsUnitOrders {
         // whole invasion wave was sent toward the same Town Hall.
         for (BlockPos candidate : candidates) {
             Path path = unit.getNavigation().createPath(candidate, 1);
-            if (path != null && path.canReach()) {
+            if (path != null && path.canReach()
+                    && RtsNavigationSafety.isSafePath(level, unit.blockPosition(), path)) {
                 return new NavigationRoute(candidate, path);
             }
         }
-        return new NavigationRoute(fallback, null);
+        return new NavigationRoute(null, null);
     }
 
     /** Drops only the cached route; the caller remains in charge of the unit's strategic order. */
@@ -258,10 +272,17 @@ public final class RtsUnitOrders {
         }
     }
 
-    private static boolean isWalkable(ServerLevel level, BlockPos feet) {
-        return level.getBlockState(feet).isAir()
-                && level.getBlockState(feet.above()).isAir()
-                && !level.getBlockState(feet.below()).getCollisionShape(level, feet.below()).isEmpty();
+    /** Stops an active route immediately if a changed block makes its next segment unsafe. */
+    public static void guardVillagerNavigation(RtsVillagerEntity worker, ServerLevel level) {
+        if (worker == null || level == null) {
+            return;
+        }
+        Path path = worker.getNavigation().getPath();
+        if (path != null && !path.isDone()
+                && !RtsNavigationSafety.isSafePath(level, worker.blockPosition(), path)) {
+            worker.getNavigation().stop();
+            clearNavigation(worker);
+        }
     }
 
     private record Order(Mode mode, BlockPos destination, LivingEntity target) {

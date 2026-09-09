@@ -3,6 +3,8 @@ package com.hyrrx.forgottenrealmsrts;
 import com.hyrrx.forgottenrealmsrts.RtsVillagerEntity.WorkState;
 import com.hyrrx.forgottenrealmsrts.network.ModPayloads;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -22,20 +24,18 @@ import net.minecraft.world.level.levelgen.structure.templatesystem.StructureTemp
 import net.minecraft.world.phys.AABB;
 import net.neoforged.neoforge.network.PacketDistributor;
 
-/** Server-authoritative assignment and progress for buildings assembled by villagers. */
+/** Server-authoritative assignment and progress for paid and supernatural foundations. */
 public final class RtsConstructionOrders {
     public static final int MAX_BUILDERS = 32;
 
-    private static final int THINK_INTERVAL = 5;
+    private static final int PAID_THINK_INTERVAL = 5;
+    private static final int AUTONOMOUS_THINK_INTERVAL = 20;
     private static final int WORK_UNITS_PER_BLOCK = 3;
-    /** A foundation still advances slowly before the player has selected any villagers. */
+    /** Legacy palette-order foundations retain their old unattended base budget. */
     private static final int BASE_WORK_UNITS = 1;
-    /** Each builder contributes twice the unstaffed work rate while standing at the site. */
+    /** Each builder contributes two work units while standing at the site. */
     private static final int WORKER_WORK_UNITS = 2;
     private static final int MAX_BLOCKS_PER_THINK = 4;
-    /** Opening landmarks should feel responsive while remaining visibly block-by-block. */
-    private static final int PRIORITY_WORK_UNITS = 18;
-    private static final int PRIORITY_MAX_BLOCKS_PER_THINK = 8;
     private static final double BUILD_ARRIVAL_DISTANCE_SQUARED = 16.0D;
     private static final double BUILD_LEAVE_DISTANCE_SQUARED = 36.0D;
     private static final int WORK_RADIUS = 128;
@@ -98,6 +98,14 @@ public final class RtsConstructionOrders {
             return;
         }
 
+        if (isAutonomous(player, entry)) {
+            // An old save may still contain a worker assignment from before free sites became
+            // supernatural. Drop it before returning so it can never accelerate this foundation.
+            releaseWorkers(level, entry.id());
+            player.sendOverlayMessage(Component.literal("BUILDING AUTOMATICALLY"));
+            return;
+        }
+
         BlockPos center = RtsEntities.townHallGroundCenter(player).orElse(player.blockPosition());
         if (horizontalDistanceSquared(entry.origin(), center) > (double) WORK_RADIUS * WORK_RADIUS) {
             player.sendOverlayMessage(Component.literal("That build site is outside the realm's work radius."));
@@ -157,6 +165,13 @@ public final class RtsConstructionOrders {
         }
 
         ServerLevel level = (ServerLevel) player.level();
+        RtsConstructionStore store = RtsConstructionStore.get(level);
+        for (RtsConstructionStore.Entry entry : store.entries()) {
+            if (entry.owner().equals(player.getUUID()) && isAutonomous(player, entry)) {
+                // Clear even an old attached construction id whose worker state was saved as idle.
+                releaseWorkers(level, entry.id());
+            }
+        }
         BlockPos center = RtsEntities.townHallGroundCenter(player).orElse(player.blockPosition());
         List<RtsVillagerEntity> workers = level.getEntitiesOfClass(
                 RtsVillagerEntity.class,
@@ -171,20 +186,30 @@ public final class RtsConstructionOrders {
                 RtsWorkerOrders.cancel(worker);
                 continue;
             }
+            if (isAutonomous(player, entry)) {
+                RtsUnitOrders.clear(worker);
+                RtsWorkerOrders.cancel(worker);
+                continue;
+            }
             RtsUnitOrders.clear(worker);
             worker.wearBuilderKit();
             navigateToSite(level, worker, entry, template.template());
         }
     }
 
-    /** Advances all foundations owned by this player on the normal server think cadence. */
+    /** Advances paid foundations every five ticks and fresh layered foundations every twenty. */
     public static void tick(ServerPlayer player) {
         if (!RtsMode.isActive(player) || RtsBattle.outcome(player) != RtsBattle.OUTCOME_ONGOING
-                || player.tickCount % THINK_INTERVAL != 0) {
+                || !(player.level() instanceof ServerLevel level)) {
             return;
         }
 
-        ServerLevel level = (ServerLevel) player.level();
+        boolean paidThink = player.tickCount % PAID_THINK_INTERVAL == 0;
+        boolean autonomousThink = player.tickCount % AUTONOMOUS_THINK_INTERVAL == 0;
+        if (!paidThink && !autonomousThink) {
+            return;
+        }
+
         for (RtsConstructionStore.Entry entry : RtsConstructionStore.get(level).entries()) {
             if (!entry.owner().equals(player.getUUID())) {
                 continue;
@@ -195,91 +220,195 @@ public final class RtsConstructionOrders {
                 continue;
             }
 
-            List<RtsVillagerEntity> workers = workersFor(level, entry);
-            int activeBuilders = 0;
-            for (RtsVillagerEntity worker : workers) {
-                if (worker.getWorkState() == WorkState.GOING_TO_BUILD) {
-                    BlockPos target = buildTarget(level, entry, template.template());
-                    if (atBuildTarget(worker, target)) {
-                        worker.getNavigation().stop();
-                        worker.setWorkState(WorkState.BUILDING);
-                    } else if (worker.getNavigation().isDone() || worker.getNavigation().isStuck()) {
-                        navigateToSite(level, worker, entry, template.template());
+            boolean autonomous = isAutonomous(player, entry);
+            if (autonomous) {
+                // Keep the autonomy decision independent from the saved ordering flag. This also
+                // repairs legacy entries that were saved with workers attached to a now-free site.
+                releaseWorkers(level, entry.id());
+                if (entry.layered()) {
+                    if (autonomousThink) {
+                        tickLayeredAutonomousFoundation(player, level, entry, template.template());
                     }
+                } else if (paidThink) {
+                    // A legacy free record must not be reordered merely because it now resolves as
+                    // zero-cost. It also keeps its old palette-order base budget for compatibility.
+                    advancePaletteFoundation(player, level, entry, template.template(), 0);
                 }
-                if (worker.getWorkState() == WorkState.BUILDING) {
-                    BlockPos target = buildTarget(level, entry, template.template());
-                    if (!atBuildTarget(worker, target)
-                            || worker.distanceToSqr(target.getX() + 0.5D, target.getY(),
-                            target.getZ() + 0.5D) > BUILD_LEAVE_DISTANCE_SQUARED) {
-                        worker.setWorkState(WorkState.GOING_TO_BUILD);
-                        navigateToSite(level, worker, entry, template.template());
-                    } else {
-                        worker.getNavigation().stop();
-                        worker.swing(net.minecraft.world.InteractionHand.MAIN_HAND);
-                        activeBuilders++;
-                    }
-                }
+                continue;
             }
-
-            List<StructureTemplate.StructureBlockInfo> blocks = constructionBlocks(template.template());
-            int total = Math.min(entry.totalBlocks(), blocks.size());
-            boolean priorityConstruction = isPriorityConstruction(player, entry);
-            int work = entry.workProgress()
-                    + (priorityConstruction ? PRIORITY_WORK_UNITS : BASE_WORK_UNITS)
-                    + activeBuilders * WORKER_WORK_UNITS;
-            int maxBlocksThisThink = priorityConstruction
-                    ? PRIORITY_MAX_BLOCKS_PER_THINK : MAX_BLOCKS_PER_THINK;
-            RtsConstructionStore.Entry current = entry;
-            int placedThisThink = 0;
-            while (current.placedBlocks() < total && work >= WORK_UNITS_PER_BLOCK
-                    && placedThisThink < maxBlocksThisThink) {
-                StructureTemplate.StructureBlockInfo block = blocks.get(current.placedBlocks());
-                BlockPos local = BuildingPlacement.rotateOffset(block.pos().getX(), block.pos().getY(),
-                        block.pos().getZ(), template.template().getSize(), current.rotation());
-                BlockPos world = current.origin().offset(local.getX(), local.getY(), local.getZ());
-                BlockState existing = level.getBlockState(world);
-                if (!existing.isAir() && !existing.canBeReplaced()
-                        && !existing.is(block.state().getBlock())) {
-                    // A player or another world process changed a reserved cell. Never overwrite it;
-                    // leave the foundation paused until the obstruction is gone.
-                    break;
-                }
-                BlockState placedState = block.state().rotate(current.rotation());
-                level.setBlock(world, placedState, Block.UPDATE_ALL);
-                if (placedThisThink == 0) {
-                    // Server-level sound broadcasting already applies Minecraft's distance
-                    // attenuation, so players hear the work as they approach the site without a
-                    // new client packet or a global construction soundtrack.
-                    var sound = placedState.getSoundType();
-                    level.playSound(null, world, sound.getPlaceSound(), SoundSource.BLOCKS,
-                            sound.volume, sound.pitch);
-                }
-                work -= WORK_UNITS_PER_BLOCK;
-                current = new RtsConstructionStore.Entry(current.id(), current.owner(),
-                        current.structure(), current.origin(), current.rotation(), current.totalBlocks(),
-                        current.placedBlocks() + 1, work);
-                RtsConstructionStore.get(level).update(current);
-                placedThisThink++;
+            if (!paidThink) {
+                continue;
             }
-
-            if (current.placedBlocks() >= total) {
-                if (ModPayloads.completeConstruction(player, current)) {
-                    continue;
-                }
-            } else if (placedThisThink == 0 && work != current.workProgress()) {
-                RtsConstructionStore.get(level).update(new RtsConstructionStore.Entry(
-                        current.id(), current.owner(), current.structure(), current.origin(),
-                        current.rotation(), current.totalBlocks(), current.placedBlocks(), work));
-            }
+            tickPaidFoundation(player, level, entry, template.template());
         }
     }
 
-    /** Town Hall and the one free Coal Mine are the onboarding landmarks, so they assemble quickly. */
-    private static boolean isPriorityConstruction(ServerPlayer player,
-                                                  RtsConstructionStore.Entry entry) {
-        return BuildingCosts.get(entry.structure()).townHall()
-                || BuildingCosts.isFirstCoalMinePlacement(entry.structure(), player);
+    /** Keeps paid construction's five-tick navigation, staffing, and work budget unchanged. */
+    private static void tickPaidFoundation(ServerPlayer player, ServerLevel level,
+                                            RtsConstructionStore.Entry entry,
+                                            StructureTemplate template) {
+        List<RtsVillagerEntity> workers = workersFor(level, entry);
+        int activeBuilders = 0;
+        for (RtsVillagerEntity worker : workers) {
+            if (worker.getWorkState() == WorkState.GOING_TO_BUILD) {
+                BlockPos target = buildTarget(level, entry, template, worker);
+                if (target != null && atBuildTarget(level, worker, target)) {
+                    worker.getNavigation().stop();
+                    worker.setWorkState(WorkState.BUILDING);
+                } else if (worker.getNavigation().isDone() || worker.getNavigation().isStuck()) {
+                    navigateToSite(level, worker, entry, template);
+                }
+            }
+            if (worker.getWorkState() == WorkState.BUILDING) {
+                BlockPos target = buildTarget(level, entry, template, worker);
+                if (target == null || !atBuildTarget(level, worker, target)
+                        || worker.distanceToSqr(target.getX() + 0.5D, target.getY(),
+                        target.getZ() + 0.5D) > BUILD_LEAVE_DISTANCE_SQUARED) {
+                    worker.setWorkState(WorkState.GOING_TO_BUILD);
+                    navigateToSite(level, worker, entry, template);
+                } else {
+                    worker.getNavigation().stop();
+                    worker.swing(net.minecraft.world.InteractionHand.MAIN_HAND);
+                    activeBuilders++;
+                }
+            }
+        }
+
+        int total = Math.min(entry.totalBlocks(), constructionBlocks(template, false).size());
+        if (activeBuilders == 0 && entry.placedBlocks() < total) {
+            // Stored work is deliberately retained, but never consumed without a builder.
+            return;
+        }
+        advancePaletteFoundation(player, level, entry, template, activeBuilders);
+    }
+
+    /** Advances the saved palette order for paid sites and pre-layered legacy free saves. */
+    private static void advancePaletteFoundation(ServerPlayer player, ServerLevel level,
+                                                 RtsConstructionStore.Entry entry,
+                                                 StructureTemplate template,
+                                                 int activeBuilders) {
+        List<StructureTemplate.StructureBlockInfo> blocks = constructionBlocks(template, false);
+        int total = Math.min(entry.totalBlocks(), blocks.size());
+        NaturalTreeClassifier.Scanner trees = naturalTreeScanner(level, entry, template);
+        boolean allowNaturalTrees = trees != null;
+        int work = entry.workProgress() + BASE_WORK_UNITS
+                + activeBuilders * WORKER_WORK_UNITS;
+        RtsConstructionStore.Entry current = entry;
+        int placedThisThink = 0;
+        while (current.placedBlocks() < total && work >= WORK_UNITS_PER_BLOCK
+                && placedThisThink < MAX_BLOCKS_PER_THINK) {
+            StructureTemplate.StructureBlockInfo block = blocks.get(current.placedBlocks());
+            BlockPos local = BuildingPlacement.rotateOffset(block.pos().getX(), block.pos().getY(),
+                    block.pos().getZ(), template.getSize(), current.rotation());
+            BlockPos world = current.origin().offset(local.getX(), local.getY(), local.getZ());
+            BlockState existing = level.getBlockState(world);
+            BlockState placedState = block.state().rotate(current.rotation());
+            if (!existing.equals(placedState)
+                    && !BuildingPlacement.canReplaceExisting(level, world, existing,
+                    local.getY() == 0, BuildingPlacement.isPathStructure(current.structure()),
+                    allowNaturalTrees, trees)) {
+                // A player or another world process changed a reserved cell. Never overwrite it;
+                // leave the foundation paused until the obstruction is gone.
+                break;
+            }
+            boolean newlyPlaced = !existing.equals(placedState);
+            if (newlyPlaced && !level.setBlock(world, placedState, Block.UPDATE_ALL)) {
+                break;
+            }
+            if (newlyPlaced) {
+                // Server-level sound broadcasting already applies Minecraft's distance attenuation.
+                var sound = placedState.getSoundType();
+                level.playSound(null, world, sound.getPlaceSound(), SoundSource.BLOCKS,
+                        sound.volume, sound.pitch);
+            }
+            work -= WORK_UNITS_PER_BLOCK;
+            current = new RtsConstructionStore.Entry(current.id(), current.owner(),
+                    current.structure(), current.origin(), current.rotation(), current.totalBlocks(),
+                    current.placedBlocks() + 1, work, current.layered());
+            RtsConstructionStore.get(level).update(current);
+            placedThisThink++;
+        }
+
+        if (current.placedBlocks() >= total) {
+            ModPayloads.completeConstruction(player, current);
+        } else if (placedThisThink == 0 && work != current.workProgress()) {
+            RtsConstructionStore.get(level).update(new RtsConstructionStore.Entry(
+                    current.id(), current.owner(), current.structure(), current.origin(),
+                    current.rotation(), current.totalBlocks(), current.placedBlocks(), work,
+                    current.layered()));
+        }
+    }
+
+    /** Places one complete local-Y layer for a fresh autonomous foundation. */
+    private static void tickLayeredAutonomousFoundation(ServerPlayer player, ServerLevel level,
+                                                        RtsConstructionStore.Entry entry,
+                                                        StructureTemplate template) {
+        List<StructureTemplate.StructureBlockInfo> blocks = constructionBlocks(template, true);
+        int total = Math.min(entry.totalBlocks(), blocks.size());
+        if (total <= 0) {
+            return;
+        }
+
+        int firstRemaining = firstMissingBlock(level, entry, template, blocks, total);
+        if (firstRemaining < total) {
+            int layerY = blocks.get(firstRemaining).pos().getY();
+            NaturalTreeClassifier.Scanner trees = naturalTreeScanner(level, entry, template);
+            boolean allowNaturalTrees = trees != null;
+            for (int index = firstRemaining; index < total; index++) {
+                StructureTemplate.StructureBlockInfo block = blocks.get(index);
+                if (block.pos().getY() != layerY) {
+                    break;
+                }
+
+                BlockPos local = BuildingPlacement.rotateOffset(block.pos().getX(), block.pos().getY(),
+                        block.pos().getZ(), template.getSize(), entry.rotation());
+                BlockPos world = entry.origin().offset(local.getX(), local.getY(), local.getZ());
+                BlockState existing = level.getBlockState(world);
+                BlockState placedState = block.state().rotate(entry.rotation());
+                if (existing.equals(placedState)
+                        || !BuildingPlacement.canReplaceExisting(level, world, existing,
+                        local.getY() == 0, BuildingPlacement.isPathStructure(entry.structure()),
+                        allowNaturalTrees, trees)) {
+                    // Matching blocks are already complete. Obstructed blocks stay untouched and
+                    // remain the first missing prefix, so this exact layer is retried next pass.
+                    continue;
+                }
+                if (!level.setBlock(world, placedState, Block.UPDATE_ALL)) {
+                    continue;
+                }
+                var sound = placedState.getSoundType();
+                level.playSound(null, world, sound.getPlaceSound(), SoundSource.BLOCKS,
+                        sound.volume, sound.pitch);
+            }
+        }
+
+        int placedBlocks = firstMissingBlock(level, entry, template, blocks, total);
+        RtsConstructionStore.Entry current = new RtsConstructionStore.Entry(
+                entry.id(), entry.owner(), entry.structure(), entry.origin(), entry.rotation(),
+                entry.totalBlocks(), placedBlocks, 0, true);
+        if (!current.equals(entry)) {
+            RtsConstructionStore.get(level).update(current);
+        }
+        if (placedBlocks >= total) {
+            ModPayloads.completeConstruction(player, current);
+        }
+    }
+
+    /** Returns the first saved-order block whose live world state is not its expected state. */
+    private static int firstMissingBlock(ServerLevel level, RtsConstructionStore.Entry entry,
+                                         StructureTemplate template,
+                                         List<StructureTemplate.StructureBlockInfo> blocks,
+                                         int total) {
+        for (int index = 0; index < total; index++) {
+            StructureTemplate.StructureBlockInfo block = blocks.get(index);
+            BlockPos local = BuildingPlacement.rotateOffset(block.pos().getX(), block.pos().getY(),
+                    block.pos().getZ(), template.getSize(), entry.rotation());
+            BlockPos world = entry.origin().offset(local.getX(), local.getY(), local.getZ());
+            if (!level.getBlockState(world).equals(block.state().rotate(entry.rotation()))) {
+                return index;
+            }
+        }
+        return total;
     }
 
     /** Releases every worker assigned to one site, without touching the construction itself. */
@@ -292,7 +421,7 @@ public final class RtsConstructionOrders {
         for (RtsVillagerEntity worker : level.getEntitiesOfClass(
                 RtsVillagerEntity.class,
                 new AABB(site).inflate(RtsEntities.POPULATION_SCAN_RADIUS + WORK_RADIUS),
-                candidate -> candidate.isAlive() && candidate.isConstructionWorker()
+                candidate -> candidate.isAlive()
                         && candidate.getConstructionBuildingId() == constructionId)) {
             RtsUnitOrders.clear(worker);
             RtsWorkerOrders.cancel(worker);
@@ -309,15 +438,32 @@ public final class RtsConstructionOrders {
         for (RtsConstructionStore.Entry entry : owned) {
             OptionalTemplate template = templateFor(level, entry.structure());
             if (template.template() != null) {
-                List<StructureTemplate.StructureBlockInfo> blocks = constructionBlocks(template.template());
-                int count = Math.min(entry.placedBlocks(), blocks.size());
-                for (int index = 0; index < count; index++) {
-                    StructureTemplate.StructureBlockInfo block = blocks.get(index);
-                    BlockPos local = BuildingPlacement.rotateOffset(block.pos().getX(), block.pos().getY(),
-                            block.pos().getZ(), template.template().getSize(), entry.rotation());
-                    level.setBlock(entry.origin().offset(local.getX(), local.getY(), local.getZ()),
-                            Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
-                    removed++;
+                List<StructureTemplate.StructureBlockInfo> blocks = constructionBlocks(template.template(),
+                        entry.layered());
+                if (entry.layered()) {
+                    // A blocked cell can leave later cells in the same layer already assembled.
+                    // The saved count is intentionally the completed prefix (it is what prevents
+                    // the next layer from starting), so scan expected states here to clean every
+                    // partial block without touching the obstruction itself.
+                    for (StructureTemplate.StructureBlockInfo block : blocks) {
+                        BlockPos local = BuildingPlacement.rotateOffset(block.pos().getX(), block.pos().getY(),
+                                block.pos().getZ(), template.template().getSize(), entry.rotation());
+                        BlockPos world = entry.origin().offset(local.getX(), local.getY(), local.getZ());
+                        if (level.getBlockState(world).equals(block.state().rotate(entry.rotation()))) {
+                            level.setBlock(world, Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+                            removed++;
+                        }
+                    }
+                } else {
+                    int count = Math.min(entry.placedBlocks(), blocks.size());
+                    for (int index = 0; index < count; index++) {
+                        StructureTemplate.StructureBlockInfo block = blocks.get(index);
+                        BlockPos local = BuildingPlacement.rotateOffset(block.pos().getX(), block.pos().getY(),
+                                block.pos().getZ(), template.template().getSize(), entry.rotation());
+                        level.setBlock(entry.origin().offset(local.getX(), local.getY(), local.getZ()),
+                                Blocks.AIR.defaultBlockState(), Block.UPDATE_ALL);
+                        removed++;
+                    }
                 }
             }
             releaseWorkers(level, entry.id());
@@ -346,11 +492,17 @@ public final class RtsConstructionOrders {
     private static void navigateToSite(ServerLevel level, RtsVillagerEntity worker,
                                        RtsConstructionStore.Entry entry,
                                        StructureTemplate template) {
-        RtsUnitOrders.moveToSmart(worker, level, buildTarget(level, entry, template), 0.9D);
+        BlockPos target = buildTarget(level, entry, template, worker);
+        if (target == null) {
+            worker.getNavigation().stop();
+            RtsUnitOrders.clearNavigation(worker);
+            return;
+        }
+        RtsUnitOrders.moveToSmart(worker, level, target, 0.9D);
     }
 
     private static BlockPos buildTarget(ServerLevel level, RtsConstructionStore.Entry entry,
-                                        StructureTemplate template) {
+                                        StructureTemplate template, RtsVillagerEntity worker) {
         Vec3i size = BuildingPlacement.rotateSize(template.getSize(), entry.rotation());
         double centerX = entry.origin().getX() + size.getX() * 0.5D;
         double centerZ = entry.origin().getZ() + size.getZ() * 0.5D;
@@ -362,25 +514,36 @@ public final class RtsConstructionOrders {
             int minZ = entry.origin().getZ() - radius;
             int maxZ = entry.origin().getZ() + size.getZ() - 1 + radius;
             for (int x = minX; x <= maxX; x++) {
-                best = closerWalkable(level, best, x, minZ, entry.origin().getY(), centerX, centerZ);
-                best = closerWalkable(level, best, x, maxZ, entry.origin().getY(), centerX, centerZ);
+                best = closerWalkable(level, worker, best, x, minZ, entry.origin().getY(), centerX, centerZ);
+                best = closerWalkable(level, worker, best, x, maxZ, entry.origin().getY(), centerX, centerZ);
             }
             for (int z = minZ + 1; z < maxZ; z++) {
-                best = closerWalkable(level, best, minX, z, entry.origin().getY(), centerX, centerZ);
-                best = closerWalkable(level, best, maxX, z, entry.origin().getY(), centerX, centerZ);
+                best = closerWalkable(level, worker, best, minX, z, entry.origin().getY(), centerX, centerZ);
+                best = closerWalkable(level, worker, best, maxX, z, entry.origin().getY(), centerX, centerZ);
             }
             if (best != null) {
                 return best;
             }
         }
-        return entry.origin().offset(size.getX() / 2, 0, size.getZ() / 2);
+        return null;
     }
 
-    private static BlockPos closerWalkable(ServerLevel level, BlockPos current, int x, int z,
+    private static BlockPos closerWalkable(ServerLevel level, RtsVillagerEntity worker,
+                                           BlockPos current, int x, int z,
                                            int preferredY, double centerX, double centerZ) {
         int y = RtsEntities.findBottomFloorY(level, x, z, preferredY);
         BlockPos candidate = new BlockPos(x, y, z);
-        if (!isWalkable(level, candidate)) {
+        if (!RtsNavigationSafety.isSafeFeet(level, candidate)) {
+            return current;
+        }
+        if (worker != null) {
+            var path = worker.getNavigation().createPath(candidate, 1);
+            if (path == null || !path.canReach()
+                    || !RtsNavigationSafety.isSafePath(level, worker.blockPosition(), path)) {
+                return current;
+            }
+        }
+        if (current != null && !RtsNavigationSafety.isSafeFeet(level, current)) {
             return current;
         }
         double dx = candidate.getX() + 0.5D - centerX;
@@ -394,19 +557,43 @@ public final class RtsConstructionOrders {
         return distance < currentDx * currentDx + currentDz * currentDz ? candidate : current;
     }
 
-    private static boolean atBuildTarget(RtsVillagerEntity worker, BlockPos target) {
-        return worker.distanceToSqr(target.getX() + 0.5D, target.getY(), target.getZ() + 0.5D)
+    private static boolean atBuildTarget(ServerLevel level, RtsVillagerEntity worker, BlockPos target) {
+        return target != null && RtsNavigationSafety.isSafeFeet(level, worker.blockPosition())
+                && worker.distanceToSqr(target.getX() + 0.5D, target.getY(), target.getZ() + 0.5D)
                 <= BUILD_ARRIVAL_DISTANCE_SQUARED;
     }
 
-    private static boolean isWalkable(ServerLevel level, BlockPos feet) {
-        return level.getBlockState(feet).isAir()
-                && level.getBlockState(feet.above()).isAir()
-                && !level.getBlockState(feet.below()).getCollisionShape(level, feet.below()).isEmpty();
+    /** Effective zero cost, including the dynamic free first Coal Mine price. */
+    private static boolean isAutonomous(ServerPlayer player, RtsConstructionStore.Entry entry) {
+        return Arrays.stream(BuildingCosts.placementCost(entry.structure(), player))
+                .allMatch(cost -> cost <= 0);
+    }
+
+    /**
+     * Builds the same bounded tree scanner for both construction modes. Once the first foundation
+     * layer replaces a tree's soil, the active foundation's own box is allowed as temporary root
+     * support; other tracked buildings and active foundations remain hard protection boundaries.
+     */
+    private static NaturalTreeClassifier.Scanner naturalTreeScanner(
+            ServerLevel level, RtsConstructionStore.Entry entry, StructureTemplate template) {
+        if (level == null || entry == null || template == null
+                || BuildingPlacement.isLinearStructure(entry.structure())) {
+            return null;
+        }
+        NaturalTreeClassifier.Bounds foundation = NaturalTreeClassifier.Bounds.from(entry.origin(),
+                BuildingPlacement.rotateSize(template.getSize(), entry.rotation()));
+        return new NaturalTreeClassifier.Scanner(level,
+                RtsWorld.naturalTreeProtection(level, entry.id()), foundation::contains);
     }
 
     private static List<StructureTemplate.StructureBlockInfo> constructionBlocks(
             StructureTemplate template) {
+        return constructionBlocks(template, false);
+    }
+
+    /** Returns palette order for paid work, or stable bottom-up layers for zero-cost work. */
+    private static List<StructureTemplate.StructureBlockInfo> constructionBlocks(
+            StructureTemplate template, boolean layered) {
         if (template == null || template.palettes.isEmpty()) {
             return List.of();
         }
@@ -415,6 +602,9 @@ public final class RtsConstructionOrders {
             if (!info.state().isAir() && !StructureSanitizer.isTechnicalMarker(info.state())) {
                 blocks.add(info);
             }
+        }
+        if (layered) {
+            blocks.sort(Comparator.comparingInt(info -> info.pos().getY()));
         }
         return List.copyOf(blocks);
     }

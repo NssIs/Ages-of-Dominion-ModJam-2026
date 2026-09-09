@@ -1,6 +1,8 @@
 package com.hyrrx.forgottenrealmsrts.client.build;
 
+import com.hyrrx.forgottenrealmsrts.client.RtsUnitOverlayColors;
 import com.hyrrx.forgottenrealmsrts.client.ui.RtsHudState;
+import com.hyrrx.forgottenrealmsrts.network.ConstructionInfo;
 import com.hyrrx.forgottenrealmsrts.network.PlacedBuildingInfo;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
@@ -23,24 +25,35 @@ public final class BuildingSelectionRenderer {
     }
 
     private static void onRenderLevel(RenderLevelStageEvent.AfterTranslucentBlocks event) {
-        PlacedBuildingInfo selected = RtsHudState.selectedPlacedBuilding();
-        if (selected == null) {
+        PlacedBuildingInfo selectedBuilding = RtsHudState.selectedPlacedBuilding();
+        ConstructionInfo selectedFoundation = RtsHudState.selectedConstruction();
+        if (selectedBuilding == null && selectedFoundation == null) {
             return;
         }
 
         Minecraft minecraft = Minecraft.getInstance();
         Vec3 camera = minecraft.gameRenderer.getMainCamera().position();
-        BlockPos origin = selected.origin();
+        boolean foundation = selectedFoundation != null;
+        BlockPos origin = foundation ? selectedFoundation.origin() : selectedBuilding.origin();
+        int sizeX = foundation ? selectedFoundation.sizeX() : selectedBuilding.sizeX();
+        int sizeY = foundation ? selectedFoundation.sizeY() : selectedBuilding.sizeY();
+        int sizeZ = foundation ? selectedFoundation.sizeZ() : selectedBuilding.sizeZ();
         float pulse = 0.5F + 0.5F * (float) Math.sin(Util.getMillis() * 0.006D);
-        int fill = ((int) (0x18 + pulse * 0x20) << 24) | 0xF3C04D;
-        int edge = ((int) (0x7A + pulse * 0x45) << 24) | 0xFFD76A;
+        int accent = foundation
+                ? RtsHudState.isAutonomousFoundation(selectedFoundation)
+                ? RtsUnitOverlayColors.SELECTED
+                : selectedFoundation.assignedWorkers() > 0
+                ? RtsUnitOverlayColors.WORKER : RtsUnitOverlayColors.ENEMY
+                : RtsUnitOverlayColors.SELECTED;
+        int fill = ((int) (0x18 + pulse * 0x20) << 24) | (accent & 0xFFFFFF);
+        int edge = ((int) (0x7A + pulse * 0x45) << 24) | (accent & 0xFFFFFF);
 
         float x = (float) (origin.getX() - camera.x) - 0.04F;
         float y = (float) (origin.getY() - camera.y) - 0.04F;
         float z = (float) (origin.getZ() - camera.z) - 0.04F;
-        float width = selected.sizeX() + 0.08F;
-        float height = selected.sizeY() + 0.08F;
-        float depth = selected.sizeZ() + 0.08F;
+        float width = sizeX + 0.08F;
+        float height = sizeY + 0.08F;
+        float depth = sizeZ + 0.08F;
 
         MultiBufferSource.BufferSource buffers = minecraft.renderBuffers().bufferSource();
         VertexConsumer builder = buffers.getBuffer(RenderTypes.debugFilledBox());

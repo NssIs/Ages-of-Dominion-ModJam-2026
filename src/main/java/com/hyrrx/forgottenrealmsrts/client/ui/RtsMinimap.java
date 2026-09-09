@@ -61,12 +61,11 @@ public final class RtsMinimap {
     private static final int PIXELS_PER_CHUNK = 16 / BLOCKS_PER_PIXEL;
     private static final int CELL_COUNT = WINDOW_CHUNKS * WINDOW_CHUNKS;
 
-    /**
-     * Chunk cells sampled per client tick. A cell is now 16x16 pixels rather than 8x8, so each one
-     * costs four times what it used to; eight of them is ~2,000 column walks a tick and a full
-     * 256-cell sweep in about a second and a half.
-     */
-    private static final int CHUNKS_PER_TICK = 8;
+    /** Newly exposed chunk cells sampled per client tick; the rest is deliberately background work. */
+    static final int NEWLY_EXPOSED_CELLS_PER_TICK = 2;
+    static final int BACKGROUND_REFRESH_INTERVAL_TICKS = 10;
+    static final int BACKGROUND_CELLS_PER_REFRESH = 2;
+    static final int TEXTURE_UPLOAD_INTERVAL_TICKS = 2;
 
     /**
      * Unexplored. A cool dark grey-blue rather than a brown: the first version used a dark brown
@@ -112,6 +111,8 @@ public final class RtsMinimap {
     /** Scratch: the surface height of the column {@link #columnColor} last looked at. Single
      *  threaded (client tick only), and avoids allocating a holder per pixel. */
     private static int lastSampleHeight;
+    private static long tickCounter;
+    private static int uploadCooldownTicks;
 
     private RtsMinimap() {
     }
@@ -131,7 +132,7 @@ public final class RtsMinimap {
         recentre(minecraft.gameRenderer.getMainCamera().position());
 
         ClientChunkCache chunkSource = level.getChunkSource();
-        int budget = CHUNKS_PER_TICK;
+        int budget = NEWLY_EXPOSED_CELLS_PER_TICK;
         // Newly exposed cells first: those are the edge the player is walking toward, and filling
         // them late is what a "the map is rebuilding" stutter actually looks like.
         for (int cell = 0; cell < CELL_COUNT && budget > 0; cell++) {
@@ -140,14 +141,20 @@ public final class RtsMinimap {
                 budget--;
             }
         }
-        // Whatever budget is left goes on the cyclic refresh, so chunks that load later and terrain
-        // that changes are picked up without any dirty tracking.
-        for (; budget > 0; budget--) {
-            sampleChunkCell(level, chunkSource, cursor);
-            cursor = (cursor + 1) % CELL_COUNT;
+        // A small, separate cyclic refresh keeps initially unavailable chunks and later terrain
+        // changes converging without competing with the two newly exposed cells every tick.
+        tickCounter++;
+        if (isBackgroundRefreshTick(tickCounter)) {
+            for (int refresh = 0; refresh < BACKGROUND_CELLS_PER_REFRESH; refresh++) {
+                sampleChunkCell(level, chunkSource, cursor);
+                cursor = (cursor + 1) % CELL_COUNT;
+            }
         }
 
-        uploadBuffer();
+        uploadCooldownTicks = tickUploadCooldown(uploadCooldownTicks);
+        if (shouldUpload(hasDirtyRows(), uploadCooldownTicks)) {
+            uploadBuffer();
+        }
     }
 
     private static void ensureTexture(Minecraft minecraft) {
@@ -270,6 +277,7 @@ public final class RtsMinimap {
         texture.upload();
         dirtyMinY = SIZE;
         dirtyMaxY = -1;
+        uploadCooldownTicks = TEXTURE_UPLOAD_INTERVAL_TICKS;
     }
 
     private static void markDirtyRows(int fromY, int toY) {
@@ -277,9 +285,27 @@ public final class RtsMinimap {
         dirtyMaxY = Math.max(dirtyMaxY, Math.min(SIZE - 1, toY));
     }
 
+    static boolean isBackgroundRefreshTick(long tick) {
+        return tick > 0L && tick % BACKGROUND_REFRESH_INTERVAL_TICKS == 0L;
+    }
+
+    static int tickUploadCooldown(int cooldownTicks) {
+        return Math.max(0, cooldownTicks - 1);
+    }
+
+    static boolean shouldUpload(boolean rowsDirty, int cooldownTicks) {
+        return rowsDirty && cooldownTicks <= 0;
+    }
+
+    private static boolean hasDirtyRows() {
+        return dirtyMinY <= dirtyMaxY;
+    }
+
     /** Called when the player changes dimension or leaves the world. */
     public static void invalidate() {
         hasOrigin = false;
+        tickCounter = 0L;
+        uploadCooldownTicks = 0;
         if (buffer != null) {
             Arrays.fill(buffer, COLOR_FOG);
             Arrays.fill(heights, NO_HEIGHT);
